@@ -34,8 +34,8 @@ from brain.reasoning import (
     _run_reasoning,
     _handle_result,
     _build_context_summary,
-    _build_world_model_summary,
     _build_deep_world_context,
+    _build_semantic_memory_context,
 )
 from brain.interrupt import InterruptDecisionEngine
 from on_demand import (
@@ -139,9 +139,10 @@ async def _main_async() -> None:
         try:
             context    = db.get_recent_context(config.CONTEXT_WINDOW_SECONDS)
             ctx_str    = _build_context_summary(context)
-            world_mdl  = _build_world_model_summary()
             deep_world = _build_deep_world_context()
-            result     = await _run_reasoning(ctx_str, world_mdl, deep_world)
+            memory_ctx = await _build_semantic_memory_context(ctx_str)
+            full_ctx   = "\n\n".join(filter(None, [deep_world, memory_ctx, ctx_str]))
+            result     = await _run_reasoning(full_ctx)
             if result:
                 await _handle_result(result, ctx_str, interrupt_engine)
         except Exception as e:

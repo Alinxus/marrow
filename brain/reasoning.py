@@ -93,27 +93,56 @@ def _build_context_summary(context: dict) -> str:
     return "\n".join(parts) if parts else "No context captured yet."
 
 
-def _build_world_model_summary() -> str:
+async def _build_semantic_memory_context(current_context: str) -> str:
     """
-    Build a concise summary of what Marrow knows about the user.
-    Groups by type for readability.
+    Semantic memory retrieval — searches RetainDB for memories relevant
+    to what's happening right now, then falls back to recent observations.
+    This replaces the naive get_observations(limit=40) approach.
     """
-    obs = db.get_observations(limit=40)
-    if not obs:
-        return ""
+    from actions.memory import get_memory_client
+    from brain.wiki import wiki_context
 
-    by_type: dict = {}
-    for o in obs:
-        t = o["type"]
-        by_type.setdefault(t, []).append(o["content"])
+    parts = []
 
-    lines = ["=== WHAT I KNOW ==="]
-    for type_, items in by_type.items():
-        lines.append(f"\n[{type_.upper()}]")
-        for item in items[:6]:
-            lines.append(f"  • {item}")
+    # 1. Personal wiki (full structured knowledge base)
+    wiki = wiki_context()
+    if wiki:
+        parts.append(wiki)
 
-    return "\n".join(lines)
+    # 2. Semantic search from RetainDB — relevant to current context
+    client = get_memory_client()
+    if client and current_context:
+        try:
+            # Use a condensed version of current context as the query
+            query = current_context[:500]
+            results = await client.search_memory(query, limit=8)
+            if results:
+                lines = ["=== RELEVANT MEMORIES ==="]
+                for r in results:
+                    content = r.get("content", "").strip()
+                    if content and not content.startswith("[WIKI SUMMARY]"):
+                        lines.append(f"  • {content[:200]}")
+                if len(lines) > 1:
+                    parts.append("\n".join(lines))
+        except Exception as e:
+            log.debug(f"RetainDB semantic search error: {e}")
+
+    # 3. Fallback: recent observations from local DB (grouped by type)
+    obs = db.get_observations(limit=30)
+    if obs:
+        by_type: dict = {}
+        for o in obs:
+            t = o["type"]
+            by_type.setdefault(t, []).append(o["content"])
+
+        lines = ["=== RECENT OBSERVATIONS ==="]
+        for type_, items in by_type.items():
+            lines.append(f"[{type_.upper()}]")
+            for item in items[:4]:
+                lines.append(f"  • {item}")
+        parts.append("\n".join(lines))
+
+    return "\n\n".join(parts) if parts else ""
 
 
 def _build_deep_world_context() -> str:
@@ -158,23 +187,16 @@ def _build_deep_world_context() -> str:
 # ─── Claude calls ──────────────────────────────────────────────────────────────
 
 
-async def _run_reasoning(
-    context_str: str,
-    world_model: str,
-    deep_world: str,
-) -> Optional[dict]:
+async def _run_reasoning(full_context: str) -> Optional[dict]:
     """
     Ask the LLM if there's anything worth saying or doing.
+    full_context already contains world state + memory + screen/audio.
     Returns parsed JSON or None.
     """
     from brain.llm import get_client
     llm = get_client()
 
-    user_content = (
-        f"{deep_world}\n\n{world_model}\n\n{context_str}"
-        if world_model
-        else context_str
-    )
+    user_content = full_context
 
     try:
         response = await llm.create(
@@ -330,14 +352,19 @@ async def reasoning_loop(
         try:
             context = db.get_recent_context(config.CONTEXT_WINDOW_SECONDS)
             context_str = _build_context_summary(context)
-            world_model = _build_world_model_summary()
             deep_world = _build_deep_world_context()
 
             log.debug("Running reasoning cycle...")
 
+            # Semantic memory context (wiki + RetainDB search + recent obs)
+            memory_context = await _build_semantic_memory_context(context_str)
+
+            # Assemble full context for reasoning
+            full_context = "\n\n".join(filter(None, [deep_world, memory_context, context_str]))
+
             # Reasoning + world model extraction run in parallel
             result, _ = await asyncio.gather(
-                _run_reasoning(context_str, world_model, deep_world),
+                _run_reasoning(full_context),
                 _extract_world_model(context_str, context.get("screenshots", [])),
                 return_exceptions=False,
             )
@@ -354,6 +381,95 @@ async def reasoning_loop(
         elapsed = time.time() - cycle_start
         sleep_for = max(0.0, config.REASONING_INTERVAL - elapsed)
         await asyncio.sleep(sleep_for)
+
+
+_FOUR_AXIS_PROMPT = """\
+Evaluate this proposed AI insight before it interrupts the user.
+
+Insight: "{message}"
+Reasoning: "{reasoning}"
+Context: {context}
+
+Score each axis 0.0-1.0:
+- actionability: Does this enable a concrete action the user can take NOW?
+- timeliness: Is the timing genuinely important — would it be less useful later?
+- non_obviousness: Would the user figure this out themselves in the next 30 seconds?
+- specificity: Is this grounded in specific facts from their context (not generic advice)?
+
+Anti-patterns that force score=0 overall (return immediately):
+- Generic wellness: "take a break", "stay hydrated", "you got this"
+- Motivational platitudes without specifics
+- Narrating what they can already see on screen
+- Hedged language: "it seems like", "you might want to", "perhaps consider"
+- Restating what the user just said or did
+
+Return JSON only:
+{"actionability": 0.0, "timeliness": 0.0, "non_obviousness": 0.0, "specificity": 0.0, "veto": false, "veto_reason": ""}
+
+veto=true means instant rejection regardless of scores."""
+
+_ANTI_PATTERNS = [
+    "take a break", "stay hydrated", "you got this", "great job",
+    "keep up the good work", "you're doing great", "don't forget to",
+    "it seems like you", "you might want to", "perhaps consider",
+    "it looks like you", "i notice that you", "i can see that",
+]
+
+
+async def _four_axis_score(message: str, reasoning: str, context: str) -> float:
+    """
+    OMI-style 4-axis confidence scoring.
+    Returns a composite score 0.0-1.0. Below 0.55 = rejected.
+    Returns -1.0 on veto (hard rejection).
+    """
+    # Fast pre-filter: anti-pattern string match
+    msg_lower = message.lower()
+    for pattern in _ANTI_PATTERNS:
+        if pattern in msg_lower:
+            log.debug(f"4-axis: anti-pattern match '{pattern}' — rejected")
+            return -1.0
+
+    try:
+        from brain.llm import get_client
+        llm = get_client()
+
+        prompt = _FOUR_AXIS_PROMPT.format(
+            message=message[:300],
+            reasoning=reasoning[:200],
+            context=context[:400],
+        )
+
+        response = await llm.create(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150,
+            model_type="scoring",
+        )
+        raw = response.text.strip()
+
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            return 0.5  # default: let through if can't score
+
+        scores = json.loads(raw[start:end])
+
+        if scores.get("veto"):
+            log.debug(f"4-axis veto: {scores.get('veto_reason', '')}")
+            return -1.0
+
+        a = float(scores.get("actionability", 0.5))
+        t = float(scores.get("timeliness", 0.5))
+        n = float(scores.get("non_obviousness", 0.5))
+        s = float(scores.get("specificity", 0.5))
+
+        # Weighted composite — specificity and non-obviousness weighted higher
+        composite = (a * 0.2) + (t * 0.2) + (n * 0.3) + (s * 0.3)
+        log.debug(f"4-axis: A={a:.2f} T={t:.2f} N={n:.2f} S={s:.2f} → {composite:.2f}")
+        return composite
+
+    except Exception as e:
+        log.debug(f"4-axis scoring error: {e}")
+        return 0.5  # default: let through on error
 
 
 async def _handle_result(
@@ -377,11 +493,19 @@ async def _handle_result(
     )
 
     if should_speak and message:
+        # 4-axis confidence filter before even hitting the interrupt engine
+        score = await _four_axis_score(message, reasoning, context_str[:400])
+        if score < 0:
+            log.debug(f"4-axis veto: {message[:60]}")
+            return
+        if score < 0.45:
+            log.debug(f"4-axis rejected (score={score:.2f}): {message[:60]}")
+            return
+
         if interrupt_engine.should_speak(candidate):
             interrupt_engine.record_spoken(candidate)
 
             if act:
-                # Speak the message (tells user what we're doing), then act
                 await speak(message)
                 await _run_action(act, context_str)
             else:

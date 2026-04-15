@@ -270,6 +270,27 @@ def get_observations(limit: int = 50) -> list:
     return [dict(r) for r in rows]
 
 
+def get_observations_since_id(last_id: int, limit: int = 50) -> list:
+    """Get observations with id > last_id (for wiki incremental updates)."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, type, content, ts FROM observations WHERE id > ? ORDER BY id ASC LIMIT ?",
+        (last_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_transcripts(window_seconds: int = 3600) -> list:
+    """Get recent audio transcripts."""
+    conn = _connect()
+    cutoff = (datetime.utcnow() - timedelta(seconds=window_seconds)).timestamp()
+    rows = conn.execute(
+        "SELECT ts, text FROM transcripts WHERE ts > ? ORDER BY ts DESC LIMIT 30",
+        (cutoff,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_observations_by_type(type_: str, limit: int = 20) -> list:
     conn = _connect()
     rows = conn.execute(

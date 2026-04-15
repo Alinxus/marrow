@@ -90,14 +90,25 @@ def set_wake_word_callback(callback):
     _wake_word_callback = callback
 
 
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "") if hasattr(__import__("os"), "environ") else ""
+
+
 class AudioCaptureService:
     def __init__(self):
-        log.info(f"Loading Whisper model: {config.WHISPER_MODEL}")
-        self._model = WhisperModel(
-            config.WHISPER_MODEL,
-            device="cpu",
-            compute_type="int8",
-        )
+        import os as _os
+        self._deepgram_key = _os.environ.get("DEEPGRAM_API_KEY", "")
+
+        if self._deepgram_key:
+            log.info("Audio: Deepgram streaming enabled")
+            self._model = None
+        else:
+            log.info(f"Audio: Whisper fallback ({config.WHISPER_MODEL})")
+            self._model = WhisperModel(
+                config.WHISPER_MODEL,
+                device="cpu",
+                compute_type="int8",
+            )
+
         self._audio_queue: queue.Queue = queue.Queue()
         self._running = False
         self._loop = None  # Set by set_loop() before run()
@@ -200,23 +211,7 @@ class AudioCaptureService:
                     try:
                         text = self._transcribe(audio)
                         if text:
-                            ts = time.time()
-                            db.insert_transcript(ts, text)
-                            log.info(f"Heard: {text[:100]}")
-                            # Emit to UI so dashboard shows what was heard
-                            try:
-                                from ui.bridge import get_bridge
-                                get_bridge().transcript_heard.emit(text[:120])
-                            except Exception:
-                                pass
-
-                            # Check for wake word
-                            # run_coroutine_threadsafe is the correct way to
-                            # schedule an async callback from a thread executor.
-                            if _check_wake_word(text) and _wake_word_callback and self._loop:
-                                asyncio.run_coroutine_threadsafe(
-                                    _wake_word_callback(text), self._loop
-                                )
+                            self._on_transcript(text)
                     except Exception as e:
                         log.error(f"Transcription error: {e}")
 
@@ -224,6 +219,92 @@ class AudioCaptureService:
                     continue
                 except Exception as e:
                     log.error(f"Audio record loop error: {e}")
+
+    def _on_transcript(self, text: str) -> None:
+        """Called from any backend when a transcript is ready."""
+        if not text.strip():
+            return
+        ts = time.time()
+        from storage import db as _db
+        _db.insert_transcript(ts, text)
+        log.info(f"Heard: {text[:100]}")
+
+        try:
+            from ui.bridge import get_bridge
+            get_bridge().transcript_heard.emit(text[:120])
+        except Exception:
+            pass
+
+        if _check_wake_word(text) and _wake_word_callback and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                _wake_word_callback(text), self._loop
+            )
+
+    async def _run_deepgram(self) -> None:
+        """
+        Real-time streaming via Deepgram SDK.
+        Sends raw mic audio as 16kHz mono PCM, receives transcripts live.
+        """
+        try:
+            from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions, Microphone
+        except ImportError:
+            log.warning("deepgram-sdk not installed — falling back to Whisper")
+            await self._loop.run_in_executor(None, self._record_loop)
+            return
+
+        try:
+            from ui.bridge import get_bridge
+            get_bridge().mic_active.emit(True)
+        except Exception:
+            pass
+
+        log.info("Deepgram streaming started")
+        dg = DeepgramClient(self._deepgram_key)
+
+        while self._running:
+            try:
+                conn = dg.listen.live.v("1")
+
+                def on_message(self_dg, result, **kwargs):
+                    try:
+                        sentence = result.channel.alternatives[0].transcript
+                        if sentence and result.is_final:
+                            self._on_transcript(sentence)
+                    except Exception:
+                        pass
+
+                def on_error(self_dg, error, **kwargs):
+                    log.warning(f"Deepgram error: {error}")
+
+                conn.on(LiveTranscriptionEvents.Transcript, on_message)
+                conn.on(LiveTranscriptionEvents.Error, on_error)
+
+                options = LiveOptions(
+                    model="nova-2",
+                    language="en",
+                    smart_format=True,
+                    vad_events=True,
+                    endpointing=300,
+                    interim_results=False,
+                )
+
+                if not conn.start(options):
+                    log.error("Deepgram connection failed — falling back to Whisper")
+                    await self._loop.run_in_executor(None, self._record_loop)
+                    return
+
+                mic = Microphone(conn.send)
+                mic.start()
+
+                while self._running:
+                    await asyncio.sleep(1)
+
+                mic.finish()
+                conn.finish()
+
+            except Exception as e:
+                log.error(f"Deepgram stream error: {e} — reconnecting in 5s")
+                await asyncio.sleep(5)
 
     def set_loop(self, loop) -> None:
         """Must be called from main before run() so threads can schedule callbacks."""
@@ -233,7 +314,11 @@ class AudioCaptureService:
         self._running = True
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
-        await self._loop.run_in_executor(None, self._record_loop)
+
+        if self._deepgram_key:
+            await self._run_deepgram()
+        else:
+            await self._loop.run_in_executor(None, self._record_loop)
 
     def stop(self) -> None:
         self._running = False
