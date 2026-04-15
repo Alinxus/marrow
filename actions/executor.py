@@ -1,0 +1,1591 @@
+"""
+Action executor.
+
+When the reasoning loop identifies something to DO (not just say),
+this module runs Claude with action tools to complete the task.
+
+Tools available to Claude:
+  - run_command   : shell execution (PowerShell on Windows)
+  - read_file     : read any file
+  - write_file    : write/create file
+  - append_file   : append to existing file
+  - delete_file   : delete a file
+  - list_files    : list files in directory
+  - search_files  : search for text in files
+  - web_search    : search the web
+  - web_extract   : extract content from URL
+  - web_crawl     : crawl a website
+  - browser_navigate : navigate browser to URL
+  - browser_click : click element in browser
+  - browser_type  : type into element
+  - browser_search : search via browser
+  - clipboard_read : read clipboard
+  - clipboard_write : write to clipboard
+  - process_list  : list processes
+  - process_kill  : kill process
+  - window_list    : list windows
+  - window_focus   : focus window
+  - system_info   : get system stats
+  - take_screenshot : capture screen
+  - surface_to_user : show result to user
+
+Ported from Hermes:
+  - terminal_tool, file_tools, browser_tool, web_tools
+  - Added Windows-specific: clipboard, process, window management
+"""
+
+import asyncio
+import json
+import logging
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import config
+from personality.marrow import ACTION_SYSTEM_PROMPT
+
+log = logging.getLogger(__name__)
+
+SURFACE_FILE = Path.home() / ".marrow" / "surface.json"
+MAX_ITERATIONS = config.MAX_ACTION_ITERATIONS
+
+
+# ─── Tool definitions ──────────────────────────────────────────────────────────
+
+MARROW_TOOLS = [
+    {
+        "name": "run_command",
+        "description": (
+            "Run a shell command on the user's Windows machine via PowerShell. "
+            "Use for: file operations, email via himalaya CLI, calendar lookups, "
+            "git operations, any CLI task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "PowerShell command to run",
+                },
+                "explanation": {
+                    "type": "string",
+                    "description": "One-line description of what this does",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default 30)",
+                },
+            },
+            "required": ["command", "explanation"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "Read a file from disk. Returns up to 4000 characters. Use offset/limit for large files.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path or ~ path"},
+                "offset": {
+                    "type": "integer",
+                    "description": "Character offset to start reading from",
+                },
+                "limit": {"type": "integer", "description": "Max characters to return"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Write content to a file (creates or overwrites).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "offset": {
+                    "type": "integer",
+                    "description": "Offset for partial overwrite",
+                },
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "append_file",
+        "description": "Append content to an existing file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "delete_file",
+        "description": "Delete a file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "list_files",
+        "description": "List files in a directory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory path"},
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern (default: *)",
+                },
+                "recursive": {"type": "boolean", "description": "Search recursively"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "search_files",
+        "description": "Search for text in files.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory to search"},
+                "query": {"type": "string", "description": "Text to search for"},
+                "extensions": {
+                    "type": "string",
+                    "description": "File extensions to search (e.g., .py,.js)",
+                },
+            },
+            "required": ["path", "query"],
+        },
+    },
+    {
+        "name": "web_search",
+        "description": "Search the web using Firecrawl.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "limit": {"type": "integer", "description": "Max results (default 5)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "web_extract",
+        "description": "Extract content from a specific URL.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to extract from"},
+                "prompt": {"type": "string", "description": "What to extract"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "web_crawl",
+        "description": "Crawl a website with custom instructions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to crawl"},
+                "instruction": {"type": "string", "description": "What to look for"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser_navigate",
+        "description": "Navigate browser to a URL using Browser-Use.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to navigate to"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser_click",
+        "description": "Click an element in the browser.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "Element selector"},
+            },
+            "required": ["selector"],
+        },
+    },
+    {
+        "name": "browser_type",
+        "description": "Type text into an element in the browser.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "Element selector"},
+                "text": {"type": "string", "description": "Text to type"},
+            },
+            "required": ["selector", "text"],
+        },
+    },
+    {
+        "name": "browser_search",
+        "description": "Search the web using the browser.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "clipboard_read",
+        "description": "Read the system clipboard.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "clipboard_write",
+        "description": "Write text to the system clipboard.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "process_list",
+        "description": "List running processes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "process_kill",
+        "description": "Kill a process by name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "window_list",
+        "description": "List open windows.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "window_focus",
+        "description": "Focus a window by title.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "system_info",
+        "description": "Get system information (CPU, memory, disk, battery).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "take_screenshot",
+        "description": "Take a screenshot of the current screen.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "surface_to_user",
+        "description": (
+            "Show a result, draft, or proposed action to the user. "
+            "Use for: email drafts, documents to review, decisions that need approval. "
+            "Writes to a file the UI layer watches."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "What is this?"},
+                "content": {"type": "string", "description": "The draft or result"},
+                "action_label": {
+                    "type": "string",
+                    "description": "What the confirm action does",
+                },
+                "requires_approval": {
+                    "type": "boolean",
+                    "description": "Whether user must approve",
+                },
+            },
+            "required": ["title", "content"],
+        },
+    },
+    # Window management
+    {
+        "name": "window_list",
+        "description": "List all open windows",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "window_focus",
+        "description": "Focus a window by title (partial match)",
+        "input_schema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "window_move",
+        "description": "Move window to position",
+        "input_schema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}},
+            "required": ["title", "x", "y"],
+        },
+    },
+    {
+        "name": "window_resize",
+        "description": "Resize window",
+        "input_schema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"}},
+            "required": ["title", "width", "height"],
+        },
+    },
+    {
+        "name": "window_minimize",
+        "description": "Minimize window",
+        "input_schema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "window_maximize",
+        "description": "Maximize window",
+        "input_schema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "window_close",
+        "description": "Close window",
+        "input_schema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        },
+    },
+    # Application control
+    {
+        "name": "app_launch",
+        "description": "Launch an application",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "arguments": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "app_close",
+        "description": "Close an application by name",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
+    # Mouse control
+    {
+        "name": "mouse_move",
+        "description": "Move mouse to position",
+        "input_schema": {
+            "type": "object",
+            "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}},
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "mouse_click",
+        "description": "Click at position",
+        "input_schema": {
+            "type": "object",
+            "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "button": {"type": "string"}},
+        },
+    },
+    # Keyboard control
+    {
+        "name": "keyboard_type",
+        "description": "Type text",
+        "input_schema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "keyboard_hotkey",
+        "description": "Press hotkey (e.g., Ctrl+C, Alt+Tab)",
+        "input_schema": {
+            "type": "object",
+            "properties": {"keys": {"type": "string"}},
+            "required": ["keys"],
+        },
+    },
+    # Clipboard
+    {
+        "name": "clipboard_get",
+        "description": "Get clipboard content",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "clipboard_set",
+        "description": "Set clipboard content",
+        "input_schema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    },
+    # Screenshot
+    {
+        "name": "screenshot",
+        "description": "Take full screenshot",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "screenshot_region",
+        "description": "Take screenshot of region",
+        "input_schema": {
+            "type": "object",
+            "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"}},
+            "required": ["x", "y", "width", "height"],
+        },
+    },
+# Subagent delegation
+    {
+        "name": "delegate_task",
+        "description": "Break a complex task into parallel sub-tasks using subagents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "The task to delegate"},
+                "subagent_type": {"type": "string", "description": "Type: research, file_ops, code, general, quick"},
+                "max_subagents": {"type": "integer", "description": "Max subagents (default 3)"},
+            },
+            "required": ["task"],
+        },
+    },
+# Memory (RetainDB)
+    {
+        "name": "memory_add",
+        "description": "Store a fact or preference in persistent memory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "What to remember"},
+                "memory_type": {"type": "string", "description": "Type: factual, preference, instruction, event"},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "memory_search",
+        "description": "Search stored memories for relevant context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "memory_get_profile",
+        "description": "Get all stored memories about the user.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "memory_store_file",
+        "description": "Store a file in RetainDB - extracts text and creates searchable memories.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Path to file to store"},
+                "scope": {"type": "string", "description": "Scope: USER, PROJECT, ORG, AGENT"},
+            },
+            "required": ["file_path"],
+        },
+    },
+    {
+        "name": "memory_list_files",
+        "description": "List files stored in RetainDB.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "prefix": {"type": "string", "description": "Filter by path prefix"},
+                "scope": {"type": "string", "description": "Scope: USER, PROJECT, ORG"},
+            },
+        },
+    },
+    # Todo/Task tracking
+    {
+        "name": "todo_add",
+        "description": "Add a new task or todo item.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Task title"},
+                "description": {"type": "string", "description": "Task details"},
+                "due": {"type": "string", "description": "Due date (ISO format)"},
+                "priority": {
+                    "type": "integer",
+                    "description": "Priority 1-4 (1=highest)",
+                },
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "todo_list",
+        "description": "List pending tasks.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "pending, completed, or all",
+                },
+                "limit": {"type": "integer", "description": "Max tasks to show"},
+            },
+        },
+    },
+    {
+        "name": "todo_complete",
+        "description": "Mark a task as completed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todo_id": {"type": "integer", "description": "Task ID"},
+            },
+            "required": ["todo_id"],
+        },
+    },
+    {
+        "name": "todo_delete",
+        "description": "Delete a task.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todo_id": {"type": "integer", "description": "Task ID"},
+            },
+            "required": ["todo_id"],
+        },
+    },
+    # Reminders
+    {
+        "name": "reminder_add",
+        "description": "Schedule a reminder.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Reminder message"},
+                "seconds": {"type": "integer", "description": "Seconds until reminder"},
+            },
+            "required": ["message", "seconds"],
+        },
+    },
+    {
+        "name": "reminder_list",
+        "description": "List pending reminders.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    # Scheduler
+    {
+        "name": "schedule_interval",
+        "description": "Schedule a recurring task.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "Unique job name"},
+                "seconds": {"type": "integer", "description": "Run every N seconds"},
+                "minutes": {"type": "integer", "description": "Run every N minutes"},
+                "hours": {"type": "integer", "description": "Run every N hours"},
+            },
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "schedule_cron",
+        "description": "Schedule with cron expression.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "Unique job name"},
+                "cron": {
+                    "type": "string",
+                    "description": "Cron: minute.hour.day (e.g., 30.9 for 9:30 daily)",
+                },
+            },
+            "required": ["job_id", "cron"],
+        },
+    },
+    {
+        "name": "unschedule",
+        "description": "Cancel a scheduled job.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "Job ID to cancel"},
+            },
+            "required": ["job_id"],
+        },
+    },
+    # Code execution
+    {
+        "name": "execute_code",
+        "description": "Run Python, JavaScript, or shell code in sandbox.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "language": {
+                    "type": "string",
+                    "description": "python, javascript, bash",
+                },
+                "code": {"type": "string", "description": "Code to execute"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds"},
+            },
+            "required": ["language", "code"],
+        },
+    },
+    # Office/Documents
+    {
+        "name": "excel_read",
+        "description": "Read Excel file contents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Excel file path"},
+                "sheet": {"type": "string", "description": "Sheet name"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "excel_write",
+        "description": "Write data to Excel file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Excel file path"},
+                "data": {"type": "string", "description": "CSV data to write"},
+                "sheet": {"type": "string", "description": "Sheet name"},
+            },
+            "required": ["path", "data"],
+        },
+    },
+    {
+        "name": "excel_append",
+        "description": "Append rows to Excel file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Excel file path"},
+                "data": {"type": "string", "description": "CSV data to append"},
+                "sheet": {"type": "string", "description": "Sheet name"},
+            },
+            "required": ["path", "data"],
+        },
+    },
+    {
+        "name": "word_read",
+        "description": "Read Word document.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Word file path"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "word_write",
+        "description": "Write to Word document.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Word file path"},
+                "content": {"type": "string", "description": "Content to write"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "pdf_read",
+        "description": "Read PDF text content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "PDF file path"},
+                "page": {"type": "integer", "description": "Specific page number"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "pdf_info",
+        "description": "Get PDF metadata.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "PDF file path"},
+            },
+            "required": ["path"],
+        },
+    },
+    # Complex task execution
+    {
+        "name": "execute_complex",
+        "description": "Execute a complex task with planning, tool chaining, and verification.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "What you want to achieve"},
+                "verify": {"type": "boolean", "description": "Verify goal was achieved"},
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "plan_task",
+        "description": "Create a plan for a complex task without executing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "What to achieve"},
+            },
+            "required": ["goal"],
+        },
+    },
+    # Background processes
+    {
+        "name": "run_background",
+        "description": "Run a command in background (non-blocking).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Command to run"},
+                "process_id": {"type": "string", "description": "Optional ID for this process"},
+                "notify": {"type": "boolean", "description": "Notify when complete"},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "get_background_status",
+        "description": "Get status of a background process.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "process_id": {"type": "string", "description": "Process ID"},
+            },
+            "required": ["process_id"],
+        },
+    },
+    {
+        "name": "cancel_background",
+        "description": "Cancel a running background process.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "process_id": {"type": "string", "description": "Process ID to cancel"},
+            },
+            "required": ["process_id"],
+        },
+    },
+    {
+        "name": "list_background",
+        "description": "List all background processes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filter by status: running, completed, failed"},
+            },
+        },
+    },
+    # Approval
+    {
+        "name": "set_approval_mode",
+        "description": "Set approval mode: guarded (ask) or unlocked (run everything).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "description": "guarded or unlocked"},
+            },
+            "required": ["mode"],
+        },
+    },
+    # User-facing notification
+    {
+        "name": "notify_user",
+        "description": (
+            "Show a visual toast notification to the user. "
+            "Use this to surface important info, results, summaries, or alerts "
+            "without requiring voice. Always use this for startup briefings."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Toast title (short, e.g. 'Marrow' or 'Email Summary')"},
+                "message": {"type": "string", "description": "The notification body text (max 200 chars works best)"},
+                "urgency": {"type": "integer", "description": "1=critical (red), 2=high (orange), 3=medium (amber), 4=info (blue), 5=low (gray)"},
+            },
+            "required": ["title", "message"],
+        },
+    },
+    # Email access
+    {
+        "name": "get_emails",
+        "description": (
+            "Get recent emails. Tries Outlook via PowerShell first, "
+            "then falls back to run_command suggestions. "
+            "Returns a summary of unread/recent messages."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hours": {"type": "integer", "description": "Look back N hours (default 24)"},
+                "max_count": {"type": "integer", "description": "Max emails to return (default 10)"},
+                "unread_only": {"type": "boolean", "description": "Only unread emails (default true)"},
+            },
+        },
+    },
+    # Calendar access
+    {
+        "name": "get_calendar",
+        "description": (
+            "Get today's calendar events and upcoming meetings. "
+            "Tries Outlook via PowerShell. Returns a list of events with times."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "description": "Days ahead to look (default 1 = today only)"},
+            },
+        },
+    },
+]
+
+
+# ─── Tool handlers ─────────────────────────────────────────────────────────────
+
+
+def _terminal_exec(command: str, timeout: int = 30) -> str:
+    """Run a PowerShell command. Returns stdout+stderr, capped at 3000 chars."""
+    # Check approval first
+    from actions import approval
+    should_proceed, reason = approval.check_approval(command, "run_command", {"command": command})
+    if not should_proceed:
+        log.warning(f"Command blocked by approval: {reason}")
+        return f"[BLOCKED] {reason}"
+    
+    try:
+        # Wrap in PowerShell for Windows consistency
+        ps_cmd = ["powershell", "-NoProfile", "-Command", command]
+        result = subprocess.run(
+            ps_cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(Path.home()),
+            encoding="utf-8",
+            errors="replace",
+        )
+        output = (result.stdout + result.stderr).strip()
+        if len(output) > 3000:
+            output = output[:3000] + "\n[... truncated]"
+        return output or "[no output]"
+    except subprocess.TimeoutExpired:
+        return f"[timed out after {timeout}s]"
+    except FileNotFoundError:
+        # PowerShell not in PATH — try cmd
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(Path.home()),
+            )
+            return (result.stdout + result.stderr).strip()[:3000]
+        except Exception as e:
+            return f"[error: {e}]"
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+def _web_fetch(url: str, max_chars: int = 3000) -> str:
+    """Fetch a URL and return plain text content."""
+    try:
+        import urllib.request
+        import html.parser
+
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Marrow/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+
+        # Strip HTML tags with a simple parser
+        class _StripHTML(html.parser.HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.parts = []
+
+            def handle_data(self, data):
+                self.parts.append(data)
+
+        parser = _StripHTML()
+        parser.feed(raw)
+        text = " ".join(parser.parts)
+        # Collapse whitespace
+        import re
+
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:max_chars]
+    except Exception as e:
+        return f"[fetch error: {e}]"
+
+
+def _get_emails(hours: int = 24, max_count: int = 10, unread_only: bool = True) -> str:
+    """
+    Fetch recent emails via PowerShell + Outlook COM, or Gmail CLI, or himalaya.
+    Falls back gracefully with instructions if nothing is available.
+    """
+    # Try Outlook COM via PowerShell (works if Outlook is installed)
+    unread_filter = "AND [Unread]=True" if unread_only else ""
+    cutoff_date   = f"AND [ReceivedTime] > '{__import__('datetime').datetime.now() - __import__('datetime').timedelta(hours=hours)}'"
+    ps_script = f"""
+try {{
+    $outlook = New-Object -ComObject Outlook.Application
+    $ns = $outlook.GetNamespace("MAPI")
+    $inbox = $ns.GetDefaultFolder(6)  # 6 = olFolderInbox
+    $filter = "[ReceivedTime] > '{(__import__('datetime').datetime.now() - __import__('datetime').timedelta(hours=hours)).strftime('%m/%d/%Y %H:%M')}'"
+    $items = $inbox.Items.Restrict($filter)
+    $items.Sort("[ReceivedTime]", $true)
+    $count = 0
+    $results = @()
+    foreach ($item in $items) {{
+        if ($count -ge {max_count}) {{ break }}
+        if ({str(unread_only).lower()} -and -not $item.UnRead) {{ continue }}
+        $results += "[$($item.ReceivedTime.ToString('HH:mm'))] $($item.SenderName): $($item.Subject)"
+        $count++
+    }}
+    if ($results.Count -eq 0) {{ Write-Output "No {'unread ' if unread_only else ''}emails in the last {hours}h" }}
+    else {{ $results | ForEach-Object {{ Write-Output $_ }} }}
+}} catch {{
+    Write-Output "OUTLOOK_UNAVAILABLE: $_"
+}}
+""".strip()
+
+    result = _terminal_exec(ps_script, timeout=15)
+
+    if "OUTLOOK_UNAVAILABLE" in result or "not recognized" in result.lower():
+        # Try himalaya CLI (cross-platform email client)
+        himalaya = _terminal_exec(
+            f"himalaya envelope list --max-width 80 --limit {max_count}",
+            timeout=10,
+        )
+        if himalaya and "[error]" not in himalaya.lower() and "not recognized" not in himalaya.lower():
+            return f"Emails (himalaya):\n{himalaya}"
+
+        # Nothing available — give instructions
+        return (
+            f"[Email access unavailable] No email client found.\n"
+            f"To enable: install himalaya CLI (`winget install pimalaya.himalaya`) "
+            f"or ensure Microsoft Outlook is installed and configured."
+        )
+
+    return f"Recent emails (last {hours}h):\n{result}" if result else "No emails found."
+
+
+def _get_calendar(days: int = 1) -> str:
+    """
+    Fetch calendar events via PowerShell + Outlook COM.
+    Falls back to instructions if Outlook unavailable.
+    """
+    end_date = (__import__('datetime').datetime.now() + __import__('datetime').timedelta(days=days)).strftime('%m/%d/%Y')
+    today    = __import__('datetime').datetime.now().strftime('%m/%d/%Y')
+
+    ps_script = f"""
+try {{
+    $outlook = New-Object -ComObject Outlook.Application
+    $ns = $outlook.GetNamespace("MAPI")
+    $cal = $ns.GetDefaultFolder(9)  # 9 = olFolderCalendar
+    $items = $cal.Items
+    $items.IncludeRecurrences = $true
+    $items.Sort("[Start]")
+    $filter = "[Start] >= '{today} 00:00 AM' AND [Start] <= '{end_date} 11:59 PM'"
+    $restricted = $items.Restrict($filter)
+    $results = @()
+    foreach ($item in $restricted) {{
+        $results += "$($item.Start.ToString('HH:mm'))-$($item.End.ToString('HH:mm')): $($item.Subject)"
+    }}
+    if ($results.Count -eq 0) {{ Write-Output "No events today" }}
+    else {{ $results | ForEach-Object {{ Write-Output $_ }} }}
+}} catch {{
+    Write-Output "OUTLOOK_UNAVAILABLE: $_"
+}}
+""".strip()
+
+    result = _terminal_exec(ps_script, timeout=15)
+
+    if "OUTLOOK_UNAVAILABLE" in result or "not recognized" in result.lower():
+        # Try reading a local .ics calendar file if it exists
+        ics_check = _terminal_exec(
+            "Get-ChildItem $env:USERPROFILE\\*.ics -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName",
+            timeout=5,
+        )
+        if ics_check and ics_check.strip() and "[no output]" not in ics_check:
+            return (
+                f"[Calendar] Found .ics file: {ics_check.strip()}\n"
+                "Outlook is not installed. Calendar events cannot be read automatically."
+            )
+        return (
+            "[Calendar access unavailable] Outlook is not installed or not configured.\n"
+            "Install Microsoft Outlook or share your calendar via a local .ics file."
+        )
+
+    return f"Today's calendar:\n{result}" if result else "No calendar events."
+
+
+def _handle_tool_call(tool_name: str, tool_input: dict, context: str = "") -> str:
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_async_handle_tool_call(tool_name, tool_input, context))
+    finally:
+        loop.close()
+
+
+async def _async_handle_tool_call(tool_name: str, tool_input: dict, context: str = "") -> str:
+    from actions import browser, web, file_tools, system
+
+    if tool_name == "run_command":
+        timeout = tool_input.get("timeout", 30)
+        log.info(
+            f"Action › {tool_input.get('explanation', tool_input['command'][:60])}"
+        )
+        return _terminal_exec(tool_input["command"], timeout=timeout)
+
+    elif tool_name == "read_file":
+        path = tool_input["path"].replace("~", str(Path.home()))
+        offset = tool_input.get("offset", 0)
+        limit = tool_input.get("limit", 4000)
+        return await file_tools.file_read(path, offset=offset, limit=limit)
+
+    elif tool_name == "write_file":
+        path = tool_input["path"].replace("~", str(Path.home()))
+        content = tool_input["content"]
+        offset = tool_input.get("offset", 0)
+        return await file_tools.file_write(path, content, offset=offset)
+
+    elif tool_name == "append_file":
+        path = tool_input["path"].replace("~", str(Path.home()))
+        content = tool_input["content"]
+        return await file_tools.file_append(path, content)
+
+    elif tool_name == "delete_file":
+        path = tool_input["path"].replace("~", str(Path.home()))
+        return await file_tools.file_delete(path)
+
+    elif tool_name == "list_files":
+        path = tool_input.get("path", ".").replace("~", str(Path.home()))
+        pattern = tool_input.get("pattern", "*")
+        recursive = tool_input.get("recursive", False)
+        return await file_tools.file_list(path, pattern=pattern, recursive=recursive)
+
+    elif tool_name == "search_files":
+        path = tool_input.get("path", ".").replace("~", str(Path.home()))
+        query = tool_input["query"]
+        extensions = tool_input.get("extensions", "")
+        return await file_tools.file_search(path, query, extensions=extensions)
+
+    elif tool_name == "web_search":
+        query = tool_input["query"]
+        limit = tool_input.get("limit", 5)
+        return await web.web_search(query, limit=limit)
+
+    elif tool_name == "web_extract":
+        url = tool_input["url"]
+        prompt = tool_input.get("prompt", "Extract all text content")
+        return await web.web_extract(url, prompt=prompt)
+
+    elif tool_name == "web_crawl":
+        url = tool_input["url"]
+        instruction = tool_input.get("instruction", "Get all visible text")
+        return await web.web_crawl(url, instruction=instruction)
+
+    elif tool_name == "browser_navigate":
+        url = tool_input["url"]
+        return await browser.browser_navigate(url)
+
+    elif tool_name == "browser_click":
+        selector = tool_input["selector"]
+        return await browser.browser_click(selector)
+
+    elif tool_name == "browser_type":
+        selector = tool_input["selector"]
+        text = tool_input["text"]
+        return await browser.browser_type(selector, text)
+
+    elif tool_name == "browser_search":
+        query = tool_input["query"]
+        return await browser.browser_search(query)
+
+    elif tool_name == "clipboard_read":
+        return await system.clipboard_read()
+
+    elif tool_name == "clipboard_write":
+        text = tool_input["text"]
+        return await system.clipboard_write(text)
+
+    elif tool_name == "process_list":
+        return await system.process_list()
+
+    elif tool_name == "process_kill":
+        name = tool_input["name"]
+        return await system.process_kill(name)
+
+    elif tool_name == "system_info":
+        return await system.system_info()
+
+    elif tool_name == "take_screenshot":
+        return await system.take_screenshot()
+
+    elif tool_name == "surface_to_user":
+        payload = {
+            "title": tool_input["title"],
+            "content": tool_input["content"],
+            "action_label": tool_input.get("action_label", ""),
+            "requires_approval": tool_input.get("requires_approval", False),
+        }
+        try:
+            SURFACE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SURFACE_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception as e:
+            log.warning(f"surface_to_user write failed: {e}")
+        log.info(f"[SURFACE] {tool_input['title']}")
+        log.info(tool_input["content"][:400])
+        return "Surfaced to user."
+
+    # Subagent delegation
+    elif tool_name == "delegate_task":
+        from actions import delegate as delegate_mod
+
+        task = tool_input["task"]
+        subagent_type = tool_input.get("subagent_type", "general")
+        max_agents = tool_input.get("max_subagents", 3)
+        return await delegate_mod.delegate_task(task, subagent_type, max_agents, context)
+
+    # Memory
+    elif tool_name == "memory_add":
+        from actions import memory as memory_mod
+
+        content = tool_input["content"]
+        mem_type = tool_input.get("memory_type", "factual")
+        return await memory_mod.memory_add(content, mem_type)
+
+    elif tool_name == "memory_search":
+        from actions import memory as memory_mod
+
+        query = tool_input["query"]
+        return await memory_mod.memory_search(query)
+
+    elif tool_name == "memory_get_profile":
+        from actions import memory as memory_mod
+
+        return await memory_mod.memory_get_profile()
+
+    elif tool_name == "memory_store_file":
+        from actions import memory as memory_mod
+
+        file_path = tool_input["file_path"]
+        scope = tool_input.get("scope", "USER")
+        return await memory_mod.memory_store_file(file_path, scope)
+
+    elif tool_name == "memory_list_files":
+        from actions import memory as memory_mod
+
+        prefix = tool_input.get("prefix", "")
+        scope = tool_input.get("scope", "USER")
+        return await memory_mod.memory_list_files(prefix, scope)
+
+    # Todo
+    elif tool_name == "todo_add":
+        from actions import todo as todo_mod
+
+        title = tool_input["title"]
+        desc = tool_input.get("description", "")
+        due = tool_input.get("due")
+        priority = tool_input.get("priority", 3)
+        return await todo_mod.todo_add(title, desc, due, priority)
+
+    elif tool_name == "todo_list":
+        from actions import todo as todo_mod
+
+        status = tool_input.get("status", "pending")
+        limit = tool_input.get("limit", 20)
+        return await todo_mod.todo_list(status, limit)
+
+    elif tool_name == "todo_complete":
+        from actions import todo as todo_mod
+
+        return await todo_mod.todo_complete(tool_input["todo_id"])
+
+    elif tool_name == "todo_delete":
+        from actions import todo as todo_mod
+
+        return await todo_mod.todo_delete(tool_input["todo_id"])
+
+    # Reminders
+    elif tool_name == "reminder_add":
+        from actions import todo as todo_mod
+
+        msg = tool_input["message"]
+        secs = tool_input.get("seconds", 60)
+        return await todo_mod.reminder_add(msg, secs)
+
+    elif tool_name == "reminder_list":
+        from actions import todo as todo_mod
+
+        return await todo_mod.reminder_list()
+
+    # Scheduler
+    elif tool_name == "schedule_interval":
+        from actions import scheduler as sched_mod
+
+        job_id = tool_input["job_id"]
+        secs = tool_input.get("seconds")
+        mins = tool_input.get("minutes")
+        hrs = tool_input.get("hours")
+        return await sched_mod.schedule_interval(
+            job_id, lambda: None, seconds=secs, minutes=mins, hours=hrs
+        )
+
+    elif tool_name == "schedule_cron":
+        from actions import scheduler as sched_mod
+
+        job_id = tool_input["job_id"]
+        cron = tool_input["cron"]
+        return await sched_mod.schedule_cron(job_id, lambda: None, cron)
+
+    elif tool_name == "unschedule":
+        from actions import scheduler as sched_mod
+
+        return await sched_mod.unschedule(tool_input["job_id"])
+
+    # Code execution
+    elif tool_name == "execute_code":
+        from actions import code_exec as code_mod
+
+        lang = tool_input["language"]
+        code = tool_input["code"]
+        timeout = tool_input.get("timeout", 30)
+        return await code_mod.code_run(lang, code, timeout)
+
+    # Office
+    elif tool_name == "excel_read":
+        from actions import office as office_mod
+
+        return await office_mod.excel_read(tool_input["path"], tool_input.get("sheet"))
+
+    elif tool_name == "excel_write":
+        from actions import office as office_mod
+
+        return await office_mod.excel_write(
+            tool_input["path"], tool_input["data"], tool_input.get("sheet")
+        )
+
+    elif tool_name == "excel_append":
+        from actions import office as office_mod
+
+        return await office_mod.excel_append(
+            tool_input["path"], tool_input["data"], tool_input.get("sheet")
+        )
+
+    elif tool_name == "word_read":
+        from actions import office as office_mod
+
+        return await office_mod.word_read(tool_input["path"])
+
+    elif tool_name == "word_write":
+        from actions import office as office_mod
+
+        return await office_mod.word_write(tool_input["path"], tool_input["content"])
+
+    elif tool_name == "pdf_read":
+        from actions import office as office_mod
+
+        return await office_mod.pdf_read(tool_input["path"], tool_input.get("page"))
+
+    elif tool_name == "pdf_info":
+        from actions import office as office_mod
+
+        return await office_mod.pdf_info(tool_input["path"])
+
+    # Complex task execution
+    elif tool_name == "execute_complex":
+        from actions import complex_task as ct_mod
+        
+        goal = tool_input["goal"]
+        verify = tool_input.get("verify", True)
+        return await ct_mod.execute_complex(goal, context, verify)
+
+    elif tool_name == "plan_task":
+        from actions import complex_task as ct_mod
+        
+        return await ct_mod.plan_task(tool_input["goal"], context)
+
+    # Background processes
+    elif tool_name == "run_background":
+        from actions import process_registry as proc_mod
+        
+        command = tool_input["command"]
+        process_id = tool_input.get("process_id")
+        notify = tool_input.get("notify", True)
+        
+        return await proc_mod.run_background(command, process_id, notify)
+
+    elif tool_name == "get_background_status":
+        from actions import process_registry as proc_mod
+        
+        return proc_mod.get_background_status(tool_input["process_id"])
+
+    elif tool_name == "cancel_background":
+        from actions import process_registry as proc_mod
+        
+        return "Cancelled" if proc_mod.cancel_background(tool_input["process_id"]) else "Not found or not running"
+
+    elif tool_name == "list_background":
+        from actions import process_registry as proc_mod
+        
+        status = tool_input.get("status")
+        procs = proc_mod.get_process_registry().list_processes()
+        
+        if not procs:
+            return "No background processes."
+        
+        lines = ["## Background Processes\n"]
+        for p in procs:
+            if status and p.status.value != status:
+                continue
+            lines.append(f"- {p.process_id}: {p.status.value} (command: {p.command[:60]})")
+        
+        return "\n".join(lines)
+
+    # User-facing toast notification
+    elif tool_name == "notify_user":
+        title   = tool_input.get("title", "Marrow")
+        message = tool_input.get("message", "")
+        urgency = int(tool_input.get("urgency", 3))
+        try:
+            from ui.bridge import get_bridge
+            get_bridge().toast_requested.emit(title, message, urgency)
+            log.info(f"[TOAST] {title}: {message[:80]}")
+        except Exception as e:
+            log.warning(f"notify_user bridge emit failed: {e}")
+        return f"[notified] {message[:80]}"
+
+    # Email retrieval
+    elif tool_name == "get_emails":
+        hours     = int(tool_input.get("hours", 24))
+        max_count = int(tool_input.get("max_count", 10))
+        unread    = tool_input.get("unread_only", True)
+        return _get_emails(hours, max_count, unread)
+
+    # Calendar retrieval
+    elif tool_name == "get_calendar":
+        days = int(tool_input.get("days", 1))
+        return _get_calendar(days)
+
+    # Approval
+    elif tool_name == "set_approval_mode":
+        from actions import approval as approval_mod
+
+        mode = tool_input["mode"]
+        approval_mod.set_approval_mode(mode)
+        return f"Approval mode set to: {mode}"
+
+    # Window management
+    elif tool_name == "window_list":
+        from actions import app_control as app_mod
+        return await app_mod.window_list()
+    elif tool_name == "window_focus":
+        from actions import app_control as app_mod
+        return await app_mod.window_focus(tool_input["title"])
+    elif tool_name == "window_move":
+        from actions import app_control as app_mod
+        return await app_mod.window_move(tool_input["title"], tool_input["x"], tool_input["y"])
+    elif tool_name == "window_resize":
+        from actions import app_control as app_mod
+        return await app_mod.window_resize(tool_input["title"], tool_input["width"], tool_input["height"])
+    elif tool_name == "window_minimize":
+        from actions import app_control as app_mod
+        return await app_mod.window_minimize(tool_input["title"])
+    elif tool_name == "window_maximize":
+        from actions import app_control as app_mod
+        return await app_mod.window_maximize(tool_input["title"])
+    elif tool_name == "window_close":
+        from actions import app_control as app_mod
+        return await app_mod.window_close(tool_input["title"])
+    
+    # Application control
+    elif tool_name == "app_launch":
+        from actions import app_control as app_mod
+        return await app_mod.app_launch(tool_input["path"], tool_input.get("arguments", ""))
+    elif tool_name == "app_close":
+        from actions import app_control as app_mod
+        return await app_mod.app_close(tool_input["name"])
+    
+    # Mouse control
+    elif tool_name == "mouse_move":
+        from actions import app_control as app_mod
+        return await app_mod.mouse_move(tool_input["x"], tool_input["y"])
+    elif tool_name == "mouse_click":
+        from actions import app_control as app_mod
+        return await app_mod.mouse_click(
+            tool_input.get("x"), 
+            tool_input.get("y"), 
+            tool_input.get("button", "left")
+        )
+    
+    # Keyboard control
+    elif tool_name == "keyboard_type":
+        from actions import app_control as app_mod
+        return await app_mod.keyboard_type(tool_input["text"])
+    elif tool_name == "keyboard_hotkey":
+        from actions import app_control as app_mod
+        return await app_mod.keyboard_hotkey(tool_input["keys"])
+    
+    # Clipboard (redundant with system.py but here for completeness)
+    elif tool_name == "clipboard_get":
+        from actions import app_control as app_mod
+        return await app_mod.clipboard_get()
+    elif tool_name == "clipboard_set":
+        from actions import app_control as app_mod
+        return await app_mod.clipboard_set(tool_input["text"])
+    
+    # Screenshot
+    elif tool_name == "screenshot":
+        from actions import app_control as app_mod
+        return await app_mod.screenshot()
+    elif tool_name == "screenshot_region":
+        from actions import app_control as app_mod
+        return await app_mod.screenshot_region(
+            tool_input["x"], tool_input["y"], tool_input["width"], tool_input["height"]
+        )
+
+    return f"[unknown tool: {tool_name}]"
+
+
+# ─── Main entry point ──────────────────────────────────────────────────────────
+
+
+async def execute_action(task: str, context: str = "") -> str:
+    """
+    Run the LLM with all Marrow tools to complete a task.
+    Uses the unified LLM client so Anthropic/OpenAI/Ollama all work.
+    Records actions and conversation for memory.
+    """
+    from brain.llm import get_client
+    from actions import memory as memory_mod
+
+    llm = get_client()
+
+    # Inject memory context
+    memory_context = ""
+    try:
+        profile = await memory_mod.memory_get_profile()
+        if profile and len(profile) > 10:
+            memory_context = f"\n\nRelevant memory:\n{profile[:2000]}"
+    except Exception:
+        pass
+
+    user_content = (
+        f"{task}\n\nContext:\n{context}{memory_context}"
+        if context
+        else f"{task}{memory_context}"
+    )
+
+    log.info(f"Executing action: {task[:80]}")
+    asyncio.create_task(
+        memory_mod.memory_record_conversation("user", task, "action_request")
+    )
+
+    async def _tool_handler(name: str, inp: dict) -> str:
+        return await _async_handle_tool_call(name, inp, context)
+
+    async def _on_tool_call(name: str, inp: dict, result: str) -> None:
+        asyncio.create_task(
+            memory_mod.memory_record_action(
+                task=task,
+                result=result[:500],
+                tool=name,
+                success=not result.startswith("[error]"),
+            )
+        )
+
+    final_text = await llm.create_with_tools(
+        messages=[{"role": "user", "content": user_content}],
+        tools=MARROW_TOOLS,
+        tool_handler=_tool_handler,
+        system=ACTION_SYSTEM_PROMPT,
+        max_tokens=1024,
+        model_type="reasoning",
+        max_iterations=MAX_ITERATIONS,
+        on_tool_call=_on_tool_call,
+    )
+
+    asyncio.create_task(
+        memory_mod.memory_record_conversation("assistant", final_text, "action_response")
+    )
+    return final_text or "Done."
