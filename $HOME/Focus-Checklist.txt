@@ -1,0 +1,11 @@
+Focus Session Checklist
+
+[ ] Define goal for this session
+[ ] Open required files/projects
+[ ] Turn on Do Not Disturb / silence distractions
+[ ] Work in 25–45 minute blocks
+[ ] Record blockers and next steps
+[ ] Review progress at the end
+
+Timer: 45 minutes
+Started: $(Get-Date)

@@ -62,6 +62,8 @@ ADAPTER_SUGGEST_THRESHOLD = int(os.environ.get("ADAPTER_SUGGEST_THRESHOLD", "3")
 ADAPTER_MIN_TRUST_TO_RECOMMEND = float(
     os.environ.get("ADAPTER_MIN_TRUST_TO_RECOMMEND", "0.35")
 )
+ACTION_CHAT_HISTORY_MESSAGES = int(os.environ.get("ACTION_CHAT_HISTORY_MESSAGES", "12"))
+ACTION_CHAT_HISTORY_CHARS = int(os.environ.get("ACTION_CHAT_HISTORY_CHARS", "1600"))
 
 # Proactive interruption policy (Omi-style gating)
 # 1 = very strict, 5 = very frequent

@@ -37,12 +37,14 @@ Ported from Hermes:
 import asyncio
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import config
 from personality.marrow import ACTION_SYSTEM_PROMPT
+from storage import db
 
 log = logging.getLogger(__name__)
 
@@ -1260,6 +1262,93 @@ def _handle_tool_call(tool_name: str, tool_input: dict, context: str = "") -> st
         loop.close()
 
 
+def _normalize_short_reply(text: str) -> str:
+    t = (text or "").strip().lower()
+    t = re.sub(r"[\s\.!?,;:]+", " ", t).strip()
+    return t
+
+
+def _resolve_followup_task(task: str) -> str:
+    """Resolve short follow-up replies like 'yes' using recent chat context."""
+    norm = _normalize_short_reply(task)
+    if len(norm) > 30:
+        return task
+
+    affirmative = {
+        "yes",
+        "yep",
+        "yeah",
+        "sure",
+        "ok",
+        "okay",
+        "do it",
+        "go ahead",
+        "proceed",
+        "sounds good",
+        "that one",
+        "same",
+        "same one",
+        "do that",
+    }
+    negative = {"no", "nope", "nah", "stop", "cancel", "dont", "don't"}
+
+    if norm not in affirmative and norm not in negative:
+        return task
+
+    recent = db.get_recent_conversations(limit=20)  # newest first
+    if not recent:
+        return task
+
+    last_question = ""
+    last_user_request = ""
+
+    for row in recent:
+        role = (row.get("role") or "").lower()
+        content = (row.get("content") or "").strip()
+        if not content:
+            continue
+
+        if role == "assistant" and not last_question:
+            low = content.lower()
+            if (
+                "?" in content
+                or "should i" in low
+                or "want me to" in low
+                or "shall i" in low
+                or "can i" in low
+            ):
+                last_question = content[:260]
+
+        if (
+            role == "user"
+            and _normalize_short_reply(content) not in affirmative | negative
+        ):
+            if len(content) > 6:
+                last_user_request = content[:260]
+                break
+
+    if norm in affirmative:
+        if last_question:
+            return (
+                "User confirmed YES to your previous question. "
+                f"Proceed now with: {last_question}"
+            )
+        if last_user_request:
+            return (
+                "User confirmed continuation. Proceed with their previous request: "
+                f"{last_user_request}"
+            )
+        return "User said yes. Proceed with the most recent pending action."
+
+    # Negative
+    if last_question:
+        return (
+            "User declined your previous question/request. "
+            f"Do not execute it. Previous question: {last_question}"
+        )
+    return "User said no. Cancel the pending action and confirm cancellation."
+
+
 async def _async_handle_tool_call(
     tool_name: str, tool_input: dict, context: str = ""
 ) -> str:
@@ -1778,6 +1867,10 @@ async def execute_action(task: str, context: str = "") -> str:
 
     llm = get_client()
 
+    resolved_task = _resolve_followup_task(task)
+    if resolved_task != task:
+        log.info(f"Resolved follow-up '{task}' -> '{resolved_task[:120]}'")
+
     # Inject memory context
     memory_context = ""
     try:
@@ -1787,8 +1880,34 @@ async def execute_action(task: str, context: str = "") -> str:
     except Exception:
         pass
 
+    # Inject recent chat turns for continuity in interactive sessions
+    recent_chat_context = ""
+    try:
+        recent = db.get_recent_conversations(limit=config.ACTION_CHAT_HISTORY_MESSAGES)
+        if recent:
+            # DB returns newest first; we want chronological order
+            recent = list(reversed(recent))
+            lines = []
+            chars = 0
+            for row in recent:
+                role = row.get("role", "user")
+                content = (row.get("content") or "").strip().replace("\n", " ")
+                if not content:
+                    continue
+                entry = f"{role}: {content[:220]}"
+                chars += len(entry)
+                if chars > config.ACTION_CHAT_HISTORY_CHARS:
+                    break
+                lines.append(entry)
+            if lines:
+                recent_chat_context = "\n\nRecent conversation turns:\n" + "\n".join(
+                    lines
+                )
+    except Exception:
+        pass
+
     recommended_adapter = adapters_mod.recommend_adapter_tool(
-        task,
+        resolved_task,
         min_trust=float(config.ADAPTER_MIN_TRUST_TO_RECOMMEND),
     )
 
@@ -1799,9 +1918,9 @@ async def execute_action(task: str, context: str = "") -> str:
     )
 
     user_content = (
-        f"{task}\n\nContext:\n{context}{memory_context}"
+        f"{resolved_task}\n\nContext:\n{context}{recent_chat_context}{memory_context}"
         if context
-        else f"{task}{memory_context}"
+        else f"{resolved_task}{recent_chat_context}{memory_context}"
     )
     user_content += adapter_hint
 
