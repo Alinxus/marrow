@@ -13,6 +13,7 @@ from PyQt6.QtCore import (
     Qt,
     QPropertyAnimation,
     QEasingCurve,
+    QTimer,
     pyqtProperty,
 )
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
@@ -112,6 +113,8 @@ class MarrowControlBar(QWidget):
         self._body_height = 0
         self._last_proactive_text = ""
         self._state = "idle"
+        self._busy_phase = 0
+        self._settings_panel = None
 
         self.setFixedWidth(380)
         self._build_ui()
@@ -121,6 +124,10 @@ class MarrowControlBar(QWidget):
         self._anim = QPropertyAnimation(self, b"bodyHeight", self)
         self._anim.setDuration(220)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setInterval(350)
+        self._busy_timer.timeout.connect(self._tick_busy)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -139,6 +146,9 @@ class MarrowControlBar(QWidget):
 
         self._focus_lbl = _lbl("idle", QColor(125, 125, 136), 8)
         top_l.addWidget(self._focus_lbl)
+
+        self._state_lbl = _lbl("idle", QColor(160, 160, 172), 8)
+        top_l.addWidget(self._state_lbl)
         top_l.addStretch()
 
         self._mic = MicDot()
@@ -227,6 +237,29 @@ class MarrowControlBar(QWidget):
     def _on_state(self, state: str):
         self._state = state
         self._orb.set_state(state)
+        self._state_lbl.setText(state)
+
+        is_busy = state in ("thinking", "acting")
+        if is_busy and not self._busy_timer.isActive():
+            self._busy_phase = 0
+            self._busy_timer.start()
+        if not is_busy and self._busy_timer.isActive():
+            self._busy_timer.stop()
+
+        self._chat._input.setEnabled(not is_busy)
+        if state == "acting":
+            self._chat._input.setPlaceholderText("Executing action…")
+        elif state == "thinking":
+            self._chat._input.setPlaceholderText("Thinking…")
+        else:
+            self._chat._input.setPlaceholderText("Ask or tell Marrow anything…")
+
+    def _tick_busy(self):
+        if self._state not in ("thinking", "acting"):
+            return
+        self._busy_phase = (self._busy_phase + 1) % 4
+        dots = "." * self._busy_phase
+        self._state_lbl.setText(f"{self._state}{dots}")
 
     def _on_focus(self, app: str, title: str):
         txt = app or "idle"
@@ -280,9 +313,12 @@ class MarrowControlBar(QWidget):
         try:
             from ui.settings_panel import MarrowSettingsPanel
 
-            dlg = MarrowSettingsPanel(self)
-            dlg.show()
-            dlg.raise_()
+            # Keep strong reference so window is not garbage-collected on macOS.
+            if self._settings_panel is None:
+                self._settings_panel = MarrowSettingsPanel(self)
+            self._settings_panel.show()
+            self._settings_panel.raise_()
+            self._settings_panel.activateWindow()
         except Exception as e:
             log.warning(f"Settings open failed: {e}")
 

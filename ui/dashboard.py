@@ -633,6 +633,12 @@ class MarrowDashboard(QWidget):
         self._clock.timeout.connect(self._tick_meta)
         self._clock.start()
 
+        # Fast loader animation for acting/thinking states
+        self._busy_phase = 0
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setInterval(350)
+        self._busy_timer.timeout.connect(self._tick_busy)
+
     # ── Build layout ──────────────────────────────────────────────────────
 
     def _build(self):
@@ -769,8 +775,37 @@ class MarrowDashboard(QWidget):
         self._state = state
         self._orb.set_state(state)
         self._state_lbl.setText(state)
+
+        is_busy = state in ("thinking", "acting")
+        if is_busy and not self._busy_timer.isActive():
+            self._busy_phase = 0
+            self._busy_timer.start()
+        if not is_busy and self._busy_timer.isActive():
+            self._busy_timer.stop()
+
+        if state == "acting":
+            self._listen_lbl.setText("executing action…")
+            self._chat._input.setEnabled(False)
+        elif state == "thinking":
+            self._listen_lbl.setText("thinking…")
+            self._chat._input.setEnabled(False)
+        else:
+            self._chat._input.setEnabled(True)
+            if self._listen_lbl.text() in ("executing action…", "thinking…"):
+                self._listen_lbl.setText("")
         if state == "thinking" and self._pending_response:
             pass  # already showing "…"
+
+    def _tick_busy(self):
+        if self._state not in ("thinking", "acting"):
+            return
+        self._busy_phase = (self._busy_phase + 1) % 4
+        dots = "." * self._busy_phase
+        if self._state == "acting":
+            self._state_lbl.setText(f"acting{dots}")
+            self._listen_lbl.setText(f"executing action{dots}")
+        else:
+            self._state_lbl.setText(f"thinking{dots}")
 
     def _on_marrow_spoke(self, text: str, urgency: int):
         """Marrow proactively said something — show in message section."""
