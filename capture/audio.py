@@ -90,13 +90,9 @@ def set_wake_word_callback(callback):
     _wake_word_callback = callback
 
 
-DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "") if hasattr(__import__("os"), "environ") else ""
-
-
 class AudioCaptureService:
     def __init__(self):
-        import os as _os
-        self._deepgram_key = _os.environ.get("DEEPGRAM_API_KEY", "")
+        self._deepgram_key = config.DEEPGRAM_API_KEY
 
         if self._deepgram_key:
             log.info("Audio: Deepgram streaming enabled")

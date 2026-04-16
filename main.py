@@ -234,10 +234,26 @@ async def _main_async() -> None:
                 await asyncio.sleep(5)
         log.info(f"{name} stopped.")
 
+    # ── Wiki: load on startup ─────────────────────────────────────────────
+    try:
+        from brain.wiki import get_wiki, wiki_update_loop
+        get_wiki()  # loads from disk
+    except Exception as e:
+        log.warning(f"Wiki init failed: {e}")
+
+    # ── AGI: init on startup ──────────────────────────────────────────────
+    try:
+        from brain.agi import get_agi, agi_loop
+        get_agi()  # init singleton
+    except Exception as e:
+        log.warning(f"AGI init failed: {e}")
+
     # ── Launch all tasks ──────────────────────────────────────────────────
     tasks = [
         asyncio.create_task(_supervised("screen_capture", screen_capture_loop)),
         asyncio.create_task(_supervised("reasoning", reasoning_loop, interrupt_engine)),
+        asyncio.create_task(_supervised("wiki_update", wiki_update_loop)),
+        asyncio.create_task(_supervised("agi", agi_loop)),
         asyncio.create_task(_stats_loop()),
         asyncio.create_task(_shutdown_event.wait()),
     ]

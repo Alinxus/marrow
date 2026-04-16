@@ -95,52 +95,54 @@ def _build_context_summary(context: dict) -> str:
 
 async def _build_semantic_memory_context(current_context: str) -> str:
     """
-    Semantic memory retrieval — searches RetainDB for memories relevant
-    to what's happening right now, then falls back to recent observations.
-    This replaces the naive get_observations(limit=40) approach.
+    Best-quality memory context for the reasoning loop.
+
+    Layer 1: Personal wiki (fast, local, structured)
+    Layer 2: Oracle search (semantic + lexical + phonetic + temporal + graph)
+             — or semantic search as fallback
+    Layer 3: Memory graph connections (relationships RetainDB found)
+    Layer 4: Gap checking (fire-and-forget, doesn't block context assembly)
+    Layer 5: Local observation fallback
     """
-    from actions.memory import get_memory_client
     from brain.wiki import wiki_context
+    from brain.agi import get_agi
 
     parts = []
+    agi = get_agi()
 
-    # 1. Personal wiki (full structured knowledge base)
+    # 1. Personal wiki — structured, fast
     wiki = wiki_context()
     if wiki:
         parts.append(wiki)
 
-    # 2. Semantic search from RetainDB — relevant to current context
-    client = get_memory_client()
-    if client and current_context:
-        try:
-            # Use a condensed version of current context as the query
-            query = current_context[:500]
-            results = await client.search_memory(query, limit=8)
-            if results:
-                lines = ["=== RELEVANT MEMORIES ==="]
-                for r in results:
-                    content = r.get("content", "").strip()
-                    if content and not content.startswith("[WIKI SUMMARY]"):
-                        lines.append(f"  • {content[:200]}")
-                if len(lines) > 1:
-                    parts.append("\n".join(lines))
-        except Exception as e:
-            log.debug(f"RetainDB semantic search error: {e}")
+    # 2. Oracle memory search — best retrieval quality
+    if current_context:
+        oracle_ctx = await agi.get_oracle_context(current_context[:600], limit=8)
+        if oracle_ctx:
+            parts.append(oracle_ctx)
 
-    # 3. Fallback: recent observations from local DB (grouped by type)
-    obs = db.get_observations(limit=30)
-    if obs:
-        by_type: dict = {}
-        for o in obs:
-            t = o["type"]
-            by_type.setdefault(t, []).append(o["content"])
+    # 3. Memory graph connections
+    graph_ctx = agi.get_graph_context()
+    if graph_ctx:
+        parts.append(graph_ctx)
 
-        lines = ["=== RECENT OBSERVATIONS ==="]
-        for type_, items in by_type.items():
-            lines.append(f"[{type_.upper()}]")
-            for item in items[:4]:
-                lines.append(f"  • {item}")
-        parts.append("\n".join(lines))
+    # 4. Check if context answers open gap questions (fire-and-forget)
+    if current_context:
+        asyncio.create_task(agi.check_gaps_against_context(current_context))
+
+    # 5. Local fallback if cloud empty
+    if len(parts) <= 1:
+        obs = db.get_observations(limit=30)
+        if obs:
+            by_type: dict = {}
+            for o in obs:
+                by_type.setdefault(o["type"], []).append(o["content"])
+            lines = ["=== RECENT OBSERVATIONS ==="]
+            for type_, items in by_type.items():
+                lines.append(f"[{type_.upper()}]")
+                for item in items[:4]:
+                    lines.append(f"  • {item}")
+            parts.append("\n".join(lines))
 
     return "\n\n".join(parts) if parts else ""
 
@@ -271,6 +273,12 @@ async def _extract_world_model(
                     log.debug(f"World model +[{obs['type']}]: {obs['content'][:80]}")
         if new_count:
             log.debug(f"World model: {new_count} new observations")
+            # Nudge wiki to pick up new observations on next cycle
+            try:
+                from brain.wiki import get_wiki
+                get_wiki()._last_update = 0  # force refresh next cycle
+            except Exception:
+                pass
 
     except Exception as e:
         log.debug(f"World model extraction error: {e}")

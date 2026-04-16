@@ -308,7 +308,11 @@ class WikiManager:
                 log.warning(f"Wiki update error: {e}")
 
     async def _sync_to_retaindb(self) -> None:
-        """Push wiki summary to RetainDB as a high-priority memory."""
+        """
+        Push wiki to RetainDB two ways:
+        1. Summary memory — searchable by oracle
+        2. Bulk fact learn — verified facts via /v1/learn
+        """
         try:
             from actions.memory import get_memory_client
             client = get_memory_client()
@@ -328,12 +332,29 @@ class WikiManager:
             )
             summary = resp.text.strip()
 
+            # 1. Summary memory
             await client.add_memory(
                 f"[WIKI SUMMARY] {summary}",
                 memory_type="factual",
                 session_id="wiki_sync",
             )
-            log.debug("Wiki synced to RetainDB")
+
+            # 2. Teach verified facts via /v1/learn
+            facts = []
+            ident = self._wiki.get("identity", {})
+            if ident.get("name"):
+                facts.append({"content": f"User's name is {ident['name']}", "topic": "identity", "confidence": 0.95})
+            if ident.get("role"):
+                facts.append({"content": f"User's role is {ident['role']}", "topic": "identity", "confidence": 0.9})
+            for pref_k, pref_v in list(self._wiki.get("preferences", {}).items())[:5]:
+                facts.append({"content": f"User preference: {pref_k} = {pref_v}", "topic": "preferences", "confidence": 0.85})
+            for pattern in self._wiki.get("patterns", [])[:5]:
+                facts.append({"content": f"User behavioral pattern: {pattern}", "topic": "patterns", "confidence": 0.8})
+
+            if facts:
+                await client.learn(facts)
+
+            log.debug(f"Wiki synced to RetainDB ({len(facts)} facts learned)")
         except Exception as e:
             log.debug(f"Wiki RetainDB sync error: {e}")
 

@@ -28,6 +28,10 @@ import sounddevice as sd
 
 import config
 
+# ─── Kokoro state ──────────────────────────────────────────────────────────────
+_kokoro_pipeline = None
+_kokoro_lock = threading.Lock()
+
 log = logging.getLogger(__name__)
 
 # ─── State ─────────────────────────────────────────────────────────────────────
@@ -57,7 +61,12 @@ ELEVENLABS_VOICE_SETTINGS = {
 # ─── Public API ────────────────────────────────────────────────────────────────
 
 async def speak(text: str) -> None:
-    """Speak text. One at a time — waits if already speaking."""
+    """
+    Speak text. Priority chain:
+      1. ElevenLabs — best quality, needs API key (~$5/mo starter)
+      2. Kokoro     — free, local, Apache 2.0, 82M params, near-ElevenLabs quality
+      3. Windows SAPI — always-available fallback
+    """
     async with _speaking_lock:
         _cancel_event.clear()
         if config.ELEVENLABS_API_KEY:
@@ -65,7 +74,13 @@ async def speak(text: str) -> None:
                 await _speak_elevenlabs(text)
                 return
             except Exception as e:
-                log.warning(f"ElevenLabs failed, falling back to SAPI: {e}")
+                log.warning(f"ElevenLabs failed: {e}")
+        if _kokoro_available():
+            try:
+                await _speak_kokoro(text)
+                return
+            except Exception as e:
+                log.warning(f"Kokoro failed: {e}")
         await _speak_system(text)
 
 
@@ -171,6 +186,131 @@ async def _speak_elevenlabs(text: str) -> None:
     await loop.run_in_executor(None, _play_pcm_from_queue, chunk_q)
 
     fetch_thread.join(timeout=2.0)
+
+
+# ─── Kokoro local TTS ─────────────────────────────────────────────────────────
+
+def _kokoro_available() -> bool:
+    try:
+        import kokoro_onnx  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _get_kokoro_pipeline():
+    """
+    Lazy-init Kokoro ONNX pipeline (singleton). Thread-safe.
+    Downloads ~310MB model on first call to ~/.cache/kokoro-onnx.
+    """
+    global _kokoro_pipeline
+    with _kokoro_lock:
+        if _kokoro_pipeline is None:
+            from kokoro_onnx import Kokoro
+            # Downloads model + voices automatically on first call
+            _kokoro_pipeline = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
+        return _kokoro_pipeline
+
+
+def _kokoro_generate_thread(text: str, chunk_q: queue.Queue) -> None:
+    """
+    Runs in a thread: generates audio samples from Kokoro ONNX, puts numpy arrays in queue.
+    Sentinel None signals end of stream.
+    """
+    try:
+        kokoro = _get_kokoro_pipeline()
+        # af_heart = American female, warm voice
+        samples, sample_rate = kokoro.create(
+            text,
+            voice="af_heart",
+            speed=1.0,
+            lang="en-us",
+        )
+        if _cancel_event.is_set():
+            return
+        if samples is not None and len(samples) > 0:
+            # Kokoro ONNX outputs float32 — convert to int16
+            audio_int16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+            # Send in 8192-sample chunks so playback starts immediately
+            chunk_size = 8192
+            for i in range(0, len(audio_int16), chunk_size):
+                if _cancel_event.is_set():
+                    break
+                chunk_q.put(audio_int16[i:i + chunk_size])
+            chunk_q.put((None, sample_rate))  # sentinel with rate
+    except Exception as e:
+        log.error(f"Kokoro generate thread error: {e}")
+        chunk_q.put(e)
+    finally:
+        chunk_q.put(None)
+
+
+def _play_numpy_from_queue(chunk_q: queue.Queue) -> None:
+    """
+    Play int16 numpy arrays from queue via sounddevice.
+    Waits for first chunk to determine sample rate, then opens stream.
+    """
+    stream = None
+    try:
+        # Drain the queue: first item determines stream params
+        while True:
+            if _cancel_event.is_set():
+                return
+            try:
+                item = chunk_q.get(timeout=15.0)
+            except queue.Empty:
+                return
+
+            if item is None:
+                return
+            if isinstance(item, Exception):
+                raise item
+            # Sentinel tuple (None, sample_rate) ends the stream gracefully
+            if isinstance(item, tuple) and item[0] is None:
+                return
+
+            # item is a numpy int16 array
+            if stream is None:
+                # Open stream with kokoro-onnx default rate (24kHz)
+                stream = sd.RawOutputStream(
+                    samplerate=24000,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=4096,
+                )
+                stream.start()
+
+            stream.write(item.tobytes())
+    except Exception as e:
+        if not _cancel_event.is_set():
+            log.error(f"Kokoro playback error: {e}")
+    finally:
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+
+
+async def _speak_kokoro(text: str) -> None:
+    """
+    Local TTS via Kokoro ONNX (Apache 2.0, 24kHz, near-ElevenLabs quality, free).
+    First call downloads ~310MB model; subsequent calls are fast.
+    """
+    chunk_q: queue.Queue = queue.Queue(maxsize=64)
+
+    gen_thread = threading.Thread(
+        target=_kokoro_generate_thread,
+        args=(text, chunk_q),
+        daemon=True,
+    )
+    gen_thread.start()
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _play_numpy_from_queue, chunk_q)
+
+    gen_thread.join(timeout=5.0)
 
 
 # ─── Windows SAPI fallback ────────────────────────────────────────────────────

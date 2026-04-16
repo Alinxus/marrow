@@ -15,9 +15,9 @@ VISION_MODEL = "claude-haiku-4-5-20251001"
 
 # OpenAI (optional - used if LLM_PROVIDER=openai and key provided)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_REASONING_MODEL = os.environ.get("OPENAI_REASONING_MODEL", "gpt-4o")
-OPENAI_SCORING_MODEL = os.environ.get("OPENAI_SCORING_MODEL", "gpt-4o-mini")
-OPENAI_VISION_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
+OPENAI_REASONING_MODEL = os.environ.get("OPENAI_REASONING_MODEL", "gpt-5.4-mini")
+OPENAI_SCORING_MODEL = os.environ.get("OPENAI_SCORING_MODEL", "gpt-5.4-mini")
+OPENAI_VISION_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-5.4-mini")
 
 # Ollama (local - no API key needed)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -41,6 +41,13 @@ AUDIO_CHUNK_SECONDS = int(os.environ.get("AUDIO_CHUNK_SECONDS", "5"))
 
 # Audio — "small" is the minimum for decent accuracy; "medium" is better but slower
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
+
+# RetainDB
+RETAINDB_API_KEY = os.environ.get("RETAINDB_API_KEY", "")
+RETAINDB_PROJECT = os.environ.get("RETAINDB_PROJECT", "marrow")
+
+# Deepgram — if set, replaces Whisper with real-time streaming (much better)
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.01"))
 
 # Actions
