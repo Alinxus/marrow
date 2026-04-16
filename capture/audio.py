@@ -25,7 +25,6 @@ from collections import deque
 
 import numpy as np
 import sounddevice as sd
-from faster_whisper import WhisperModel
 
 import config
 from storage import db
@@ -115,6 +114,7 @@ def set_wake_word_callback(callback):
 
 class AudioCaptureService:
     def __init__(self):
+        self._audio_backend_error = ""
         if not config.AUDIO_ENABLED:
             self._deepgram_key = ""
             self._model = None
@@ -131,11 +131,22 @@ class AudioCaptureService:
             self._model = None
         else:
             log.info(f"Audio: Whisper fallback ({config.WHISPER_MODEL})")
-            self._model = WhisperModel(
-                config.WHISPER_MODEL,
-                device="cpu",
-                compute_type="int8",
-            )
+            try:
+                from faster_whisper import WhisperModel
+
+                self._model = WhisperModel(
+                    config.WHISPER_MODEL,
+                    device="cpu",
+                    compute_type="int8",
+                )
+            except Exception as e:
+                # On some macOS/CPU combos, wheels can crash with illegal instructions.
+                # Degrade gracefully instead of crashing the whole app.
+                log.error(f"Whisper init failed; disabling audio capture: {e}")
+                self._model = None
+                self._deepgram_key = ""
+                self._running = False
+                self._audio_backend_error = str(e)
 
         self._audio_queue: queue.Queue = queue.Queue()
         self._running = False
@@ -146,6 +157,9 @@ class AudioCaptureService:
         Transcribe audio with VAD filter (Silero VAD built into faster-whisper).
         Returns empty string if no speech detected.
         """
+        if self._model is None:
+            return ""
+
         segments, info = self._model.transcribe(
             audio,
             language="en",
@@ -356,6 +370,20 @@ class AudioCaptureService:
         global _mac_mic_perm_warned
         if not config.AUDIO_ENABLED:
             log.info("Audio service disabled (AUDIO_ENABLED=0)")
+            return
+
+        if self._model is None and not self._deepgram_key:
+            log.warning("Audio backend unavailable; running in screen-only mode.")
+            try:
+                from ui.bridge import get_bridge
+
+                get_bridge().mic_active.emit(False)
+                msg = "Audio backend unsupported on this machine. Running screen-only mode."
+                if self._audio_backend_error:
+                    msg += " (faster-whisper unavailable)"
+                get_bridge().toast_requested.emit("Marrow", msg, 2)
+            except Exception:
+                pass
             return
 
         self._running = True
