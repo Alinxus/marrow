@@ -15,6 +15,8 @@ The LLM client is reset so the next call picks up new settings.
 import logging
 import os
 import subprocess
+import json
+import urllib.request
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QRectF
@@ -277,6 +279,13 @@ class MarrowSettingsPanel(QWidget):
         detect_btn.clicked.connect(self._populate_ollama_models)
         lay.addWidget(detect_btn)
 
+        self._ollama_detect_status = QLabel("")
+        self._ollama_detect_status.setStyleSheet(
+            "color: rgba(140,140,150,200); font-size: 9px;"
+        )
+        self._ollama_detect_status.setWordWrap(True)
+        lay.addWidget(self._ollama_detect_status)
+
         lay.addStretch()
         return w
 
@@ -503,31 +512,68 @@ class MarrowSettingsPanel(QWidget):
         self.close()
 
     def _detect_ollama_models(self) -> list[str]:
-        try:
-            p = subprocess.run(
-                ["ollama", "list"],
-                capture_output=True,
-                text=True,
-                timeout=6,
-            )
-            if p.returncode != 0:
-                return []
+        def _dedupe(vals: list[str]) -> list[str]:
+            out = []
+            for v in vals:
+                if v and v not in out:
+                    out.append(v)
+            return out
+
+        def _parse_table(stdout: str) -> list[str]:
             models = []
-            for line in (p.stdout or "").splitlines():
+            for line in (stdout or "").splitlines():
                 s = line.strip()
                 if not s or s.lower().startswith("name"):
                     continue
                 name = s.split()[0].strip()
-                if name and name not in models:
+                if name:
                     models.append(name)
-            return models
+            return _dedupe(models)
+
+        # 1) Try CLI paths first (PATH can differ in GUI apps on macOS)
+        env = os.environ.copy()
+        extra_paths = ["/opt/homebrew/bin", "/usr/local/bin"]
+        env["PATH"] = env.get("PATH", "") + ":" + ":".join(extra_paths)
+        for exe in ("ollama", "/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"):
+            try:
+                p = subprocess.run(
+                    [exe, "list"],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                    env=env,
+                )
+                if p.returncode == 0:
+                    models = _parse_table(p.stdout)
+                    if models:
+                        return models
+            except Exception:
+                pass
+
+        # 2) Fallback to Ollama HTTP API
+        try:
+            base = self._ollama_url.text().strip() or "http://localhost:11434"
+            if not base.startswith("http"):
+                base = "http://" + base
+            with urllib.request.urlopen(
+                base.rstrip("/") + "/api/tags", timeout=5
+            ) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            models = []
+            for row in payload.get("models", []):
+                name = (row.get("name") or "").strip()
+                if name:
+                    models.append(name)
+            return _dedupe(models)
         except Exception:
             return []
 
     def _populate_ollama_models(self) -> None:
         models = self._detect_ollama_models()
         if not models:
-            log.warning("No Ollama models detected. Is `ollama` installed and running?")
+            msg = "No Ollama models detected. Ensure Ollama is running and Base URL is correct."
+            self._ollama_detect_status.setText(msg)
+            log.warning(msg)
             return
 
         for combo in (
@@ -540,6 +586,10 @@ class MarrowSettingsPanel(QWidget):
             combo.addItems(models)
             if current:
                 combo.setCurrentText(current)
+
+        self._ollama_detect_status.setText(
+            f"Detected {len(models)} model(s): {', '.join(models[:4])}{'…' if len(models) > 4 else ''}"
+        )
 
     # ── Paint & drag ──────────────────────────────────────────────────────
 

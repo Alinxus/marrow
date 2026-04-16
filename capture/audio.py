@@ -115,6 +115,7 @@ def set_wake_word_callback(callback):
 class AudioCaptureService:
     def __init__(self):
         self._audio_backend_error = ""
+        self._unavailable_notified = False
         if not config.AUDIO_ENABLED:
             self._deepgram_key = ""
             self._model = None
@@ -410,21 +411,27 @@ class AudioCaptureService:
             log.info("Audio service disabled (AUDIO_ENABLED=0)")
             return
 
-        if self._model is None and not self._deepgram_key:
-            log.warning("Audio backend unavailable; running in screen-only mode.")
-            try:
-                from ui.bridge import get_bridge
+        self._running = True
 
-                get_bridge().mic_active.emit(False)
-                msg = "Audio backend unsupported on this machine. Running screen-only mode."
-                if self._audio_backend_error:
-                    msg += " (faster-whisper unavailable)"
-                get_bridge().toast_requested.emit("Marrow", msg, 2)
-            except Exception:
-                pass
+        if self._model is None and not self._deepgram_key:
+            if not self._unavailable_notified:
+                self._unavailable_notified = True
+                log.warning("Audio backend unavailable; running in screen-only mode.")
+                try:
+                    from ui.bridge import get_bridge
+
+                    get_bridge().mic_active.emit(False)
+                    msg = "Audio backend unsupported on this machine. Running screen-only mode."
+                    if self._audio_backend_error:
+                        msg += " (faster-whisper unavailable)"
+                    get_bridge().toast_requested.emit("Marrow", msg, 2)
+                except Exception:
+                    pass
+            # Keep task alive so supervisor doesn't restart-spam.
+            while self._running:
+                await asyncio.sleep(60)
             return
 
-        self._running = True
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
 
