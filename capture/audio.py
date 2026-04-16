@@ -17,6 +17,7 @@ Design notes from Omi:
 
 import asyncio
 import logging
+import platform
 import queue
 import time
 import threading
@@ -103,6 +104,7 @@ def _select_input_device():
 
 # Callback for wake word activation
 _wake_word_callback = None
+_mac_mic_perm_warned = False
 
 
 def set_wake_word_callback(callback):
@@ -351,6 +353,7 @@ class AudioCaptureService:
         self._loop = loop
 
     async def run(self) -> None:
+        global _mac_mic_perm_warned
         if not config.AUDIO_ENABLED:
             log.info("Audio service disabled (AUDIO_ENABLED=0)")
             return
@@ -370,6 +373,27 @@ class AudioCaptureService:
                 log.error(
                     "No valid microphone input device detected. Audio capture paused."
                 )
+                while self._running:
+                    await asyncio.sleep(60)
+                return
+            if platform.system() == "Darwin" and (
+                "permission" in msg.lower() or "not authorized" in msg.lower()
+            ):
+                if not _mac_mic_perm_warned:
+                    _mac_mic_perm_warned = True
+                    log.warning(
+                        "macOS microphone permission likely missing. Enable Microphone for Terminal/Python in System Settings > Privacy & Security > Microphone, then restart Marrow."
+                    )
+                    try:
+                        from ui.bridge import get_bridge
+
+                        get_bridge().toast_requested.emit(
+                            "Marrow",
+                            "Enable Microphone permission for Terminal/Python (System Settings > Privacy & Security).",
+                            2,
+                        )
+                    except Exception:
+                        pass
                 while self._running:
                     await asyncio.sleep(60)
                 return

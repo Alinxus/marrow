@@ -13,15 +13,23 @@ import logging
 from PyQt6.QtCore import Qt, QRectF, QTimer
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
-    QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 log = logging.getLogger(__name__)
 
-BG      = QColor(16, 16, 20, 245)
-BORDER  = QColor(255, 255, 255, 22)
-RED     = QColor(239, 68, 68)
-GREEN   = QColor(34, 197, 94)
+BG = QColor(16, 16, 20, 245)
+BORDER = QColor(255, 255, 255, 22)
+RED = QColor(239, 68, 68)
+GREEN = QColor(34, 197, 94)
+
+# Keep strong refs to dialogs so Qt doesn't garbage-collect them immediately.
+_OPEN_APPROVALS: dict[str, "ApprovalDialog"] = {}
 
 
 class ApprovalDialog(QWidget):
@@ -89,7 +97,9 @@ class ApprovalDialog(QWidget):
 
         # Countdown
         self._countdown_lbl = QLabel(f"Auto-declining in {self._remaining}s")
-        self._countdown_lbl.setStyleSheet("color: rgba(120,120,130,200); font-size: 9px;")
+        self._countdown_lbl.setStyleSheet(
+            "color: rgba(120,120,130,200); font-size: 9px;"
+        )
         lay.addWidget(self._countdown_lbl)
 
         # Buttons
@@ -153,6 +163,7 @@ class ApprovalDialog(QWidget):
         self._timer.stop()
         try:
             from ui.bridge import get_bridge
+
             get_bridge().respond_to_approval(self._callback_id, approved)
         except Exception as e:
             log.warning(f"Approval response failed: {e}")
@@ -174,7 +185,21 @@ def show_approval_dialog(description: str, command: str, callback_id: str) -> No
     Slot connected to bridge.approval_requested.
     Called on the Qt main thread.
     """
+    # Replace existing dialog for same callback id (safety)
+    old = _OPEN_APPROVALS.get(callback_id)
+    if old is not None:
+        try:
+            old.close()
+        except Exception:
+            pass
+
     dlg = ApprovalDialog(description, command, callback_id)
+    _OPEN_APPROVALS[callback_id] = dlg
+
+    def _cleanup(*_):
+        _OPEN_APPROVALS.pop(callback_id, None)
+
+    dlg.destroyed.connect(_cleanup)
     dlg.show()
     dlg.raise_()
     dlg.activateWindow()

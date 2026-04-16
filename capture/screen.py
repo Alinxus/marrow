@@ -20,6 +20,7 @@ import base64
 import hashlib
 import io
 import logging
+import platform
 import time
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ _last_title: str = ""
 _last_focused: str = ""
 _last_hash: str = ""
 _last_vision_ts: float = 0.0
+_mac_screen_perm_warned: bool = False
 
 
 def _get_active_window() -> tuple[str, str, str]:
@@ -217,7 +219,13 @@ async def _extract_text_with_vision(
 
 async def screen_capture_loop() -> None:
     """Main screen capture loop. Runs forever. No external client needed."""
-    global _last_app, _last_title, _last_focused, _last_hash, _last_vision_ts
+    global \
+        _last_app, \
+        _last_title, \
+        _last_focused, \
+        _last_hash, \
+        _last_vision_ts, \
+        _mac_screen_perm_warned
 
     log.info("Screen capture loop started")
 
@@ -304,5 +312,27 @@ async def screen_capture_loop() -> None:
 
             except Exception as e:
                 log.error(f"Screen capture error: {e}")
+                msg = str(e).lower()
+                if platform.system() == "Darwin" and not _mac_screen_perm_warned:
+                    if (
+                        "permission" in msg
+                        or "not authorized" in msg
+                        or "cgwindow" in msg
+                        or "display" in msg
+                    ):
+                        _mac_screen_perm_warned = True
+                        log.warning(
+                            "macOS screen permission likely missing. Enable Screen Recording for Terminal/Python in System Settings > Privacy & Security > Screen Recording, then restart Marrow."
+                        )
+                        try:
+                            from ui.bridge import get_bridge
+
+                            get_bridge().toast_requested.emit(
+                                "Marrow",
+                                "Enable Screen Recording permission for Terminal/Python (System Settings > Privacy & Security).",
+                                2,
+                            )
+                        except Exception:
+                            pass
 
             await asyncio.sleep(config.SCREENSHOT_INTERVAL)

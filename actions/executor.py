@@ -904,6 +904,24 @@ MARROW_TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "check_permissions",
+        "description": "Check runtime permissions/capabilities (screen, mic, hotkey, platform-specific access).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "detailed": {
+                    "type": "boolean",
+                    "description": "Include extra guidance",
+                },
+            },
+        },
+    },
+    {
+        "name": "open_permission_panels",
+        "description": "Open OS permission settings panels relevant to Marrow setup.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "verify_local_adapter",
         "description": "Run a smoke test for a local adapter and save pass/fail status.",
         "input_schema": {
@@ -1681,6 +1699,16 @@ async def _async_handle_tool_call(
             sample_input_json=tool_input.get("sample_input_json", ""),
             run_command=_terminal_exec,
         )
+
+    elif tool_name == "check_permissions":
+        from actions import permissions as perms_mod
+
+        return perms_mod.check_permissions(detailed=tool_input.get("detailed", False))
+
+    elif tool_name == "open_permission_panels":
+        from actions import permissions as perms_mod
+
+        return perms_mod.open_permission_panels()
 
     # Background processes
     elif tool_name == "run_background":

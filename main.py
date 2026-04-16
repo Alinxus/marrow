@@ -160,6 +160,29 @@ async def _main_async() -> None:
         _bridge.set_activation_callback(on_activation)
     init_on_demand()
 
+    # ── Startup permission health check ───────────────────────────────────
+    try:
+        from actions import permissions as _perms
+
+        perm_report = _perms.check_permissions(detailed=False)
+        low = perm_report.lower()
+        if "missing" in low or "issue(s) detected" in low:
+            _emit(
+                "toast_requested",
+                config.MARROW_NAME,
+                "Permission/capability issues detected. Run 'check_permissions' for details.",
+                2,
+            )
+        else:
+            _emit(
+                "toast_requested",
+                config.MARROW_NAME,
+                "Permissions look healthy.",
+                5,
+            )
+    except Exception:
+        pass
+
     # ── Patch speak() → bridge signals + toast ────────────────────────────
     try:
         import voice.speak as _speak_mod

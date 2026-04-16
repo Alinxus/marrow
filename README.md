@@ -198,6 +198,15 @@ If you see `Error querying device -1`:
 
 Marrow now avoids infinite crash loops when input devices are invalid.
 
+## Permission Checklist
+
+You can ask Marrow (or call tool) to run:
+
+- `check_permissions`
+- `open_permission_panels`
+
+This checks core runtime capabilities (screen capture, microphone, hotkey, and platform-specific access checks) and reports missing pieces.
+
 ## Context Awareness Behavior
 
 Marrow stores long-horizon interaction and media signals as durable memory and lets reasoning infer what matters. It should surface the insight directly (not internal mechanism labels).
