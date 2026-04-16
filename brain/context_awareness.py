@@ -1,11 +1,17 @@
-"""High-signal context extraction from screenshots.
+"""High-signal context extraction from screenshots and transcripts.
 
-Adds two classes of durable signals:
-1) Contact interaction events (outgoing/incoming email/chat)
-2) High-risk claim events from media feeds (misinfo-sensitive topics)
+Three classes of durable signals:
+1) Contact interaction events — outgoing/incoming email/chat, plus apology/pressure detection
+2) Claim events — any factual claim on screen or in audio (queued for web verification)
+3) Meeting presence signals — participants joining/leaving video calls
+
+Unlike the old version which hardcoded specific topics (e.g. "epstein"),
+claim detection now covers ANY verifiable factual assertion via the
+claim_verifier pipeline.
 """
 
 import re
+import time
 
 from storage import db
 
@@ -14,29 +20,30 @@ _TO_NAME_RE = re.compile(r"\bto\s*:\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})")
 
 _MAIL_APPS = {"outlook", "thunderbird", "mail", "spark", "superhuman"}
 _CHAT_APPS = {"slack", "discord", "teams", "telegram", "whatsapp", "signal"}
-_MEETING_APPS = {"zoom", "teams", "meet", "webex", "discord", "slack"}
+_MEETING_APPS = {"zoom", "teams", "meet", "webex", "discord", "slack", "facetime", "skype"}
 _MEDIA_APPS = {
-    "chrome",
-    "msedge",
-    "firefox",
-    "brave",
-    "safari",
-    "youtube",
-    "x",
-    "reddit",
+    "chrome", "msedge", "firefox", "brave", "safari",
+    "youtube", "vlc", "mpv", "iina",
+    "x", "reddit", "twitter",
 }
 
-_TOPIC_FACTS = {
-    "epstein": "Jeffrey Epstein is officially reported deceased (2019).",
-    "jeffrey epstein": "Jeffrey Epstein is officially reported deceased (2019).",
-}
+# Apology / concession patterns — detect user writing an apology to someone
+_APOLOGY_PATTERNS = [
+    re.compile(r"\b(sorry|apologize|apologies|forgive me|my fault|i was wrong)\b", re.IGNORECASE),
+    re.compile(r"\b(sincerely apologize|deeply sorry|truly sorry)\b", re.IGNORECASE),
+]
 
-_CLAIM_PATTERNS = [
-    re.compile(r"\b(is|was)\s+alive\b", re.IGNORECASE),
-    re.compile(r"\bfake\b", re.IGNORECASE),
-    re.compile(r"\bhoax\b", re.IGNORECASE),
-    re.compile(r"\bcover\s?up\b", re.IGNORECASE),
-    re.compile(r"\bnot\s+dead\b", re.IGNORECASE),
+# Claim-like language in media/audio — any strong factual assertion
+_STRONG_CLAIM_PATTERNS = [
+    re.compile(r"\b(is|was|are|were)\s+(alive|dead|fake|real|innocent|guilty)\b", re.IGNORECASE),
+    re.compile(r"\b(they\s+lied|cover[\s-]?up|government\s+hid|secret\s+deal)\b", re.IGNORECASE),
+    re.compile(r"\b(never\s+happened|didn[''']t\s+happen|was\s+fabricated)\b", re.IGNORECASE),
+    re.compile(r"\b(proven|confirmed|leaked|revealed|exposed)\s+that\b", re.IGNORECASE),
+    re.compile(r"\b(the\s+truth\s+is|the\s+real\s+story|what\s+they\s+don[''']t\s+tell\s+you)\b", re.IGNORECASE),
+    re.compile(r"\bcauses?\s+(cancer|autism|death|disease)\b", re.IGNORECASE),
+    re.compile(r"\b(did|didn[''']t)\s+kill\b", re.IGNORECASE),
+    re.compile(r"\bstill\s+alive\b", re.IGNORECASE),
+    re.compile(r"\bwas\s+murdered\b", re.IGNORECASE),
 ]
 
 _MEETING_PRESENCE_PATTERNS = [
@@ -45,7 +52,26 @@ _MEETING_PRESENCE_PATTERNS = [
     re.compile(r"\bwaiting room\b", re.IGNORECASE),
     re.compile(r"\bwas added\b", re.IGNORECASE),
     re.compile(r"\bconnected\b", re.IGNORECASE),
+    re.compile(r"\d+\s+participants?\b", re.IGNORECASE),
+    re.compile(r"\bsomeone\s+(joined|entered|appeared)\b", re.IGNORECASE),
 ]
+
+# Vision model OCR phrases that indicate a person is visible in a video call frame
+# These come from the LLM vision description, not raw text on screen
+_VIDEO_FACE_PATTERNS = [
+    re.compile(r"\b(person|man|woman|individual)\s+(visible|appearing|shown|seen|in\s+(the\s+)?video)\b", re.IGNORECASE),
+    re.compile(r"\bvideo\s+(tile|feed|frame|call|thumbnail)\s+(showing|with|of)\s+(a\s+)?(person|man|woman|face)\b", re.IGNORECASE),
+    re.compile(r"\b(face|head|upper\s+body)\s+visible\s+in\b", re.IGNORECASE),
+    re.compile(r"\b(another|second|third)\s+(person|participant|individual)\b", re.IGNORECASE),
+    re.compile(r"\b(background|behind)\s+.{0,30}\s+(person|man|woman|someone)\b", re.IGNORECASE),
+    re.compile(r"\b(someone|a\s+person)\s+(is\s+)?(in\s+the\s+)?(background|visible|frame|camera)\b", re.IGNORECASE),
+    re.compile(r"\b\d\s+people\s+(visible|in\s+the\s+call|on\s+screen|on\s+camera)\b", re.IGNORECASE),
+    re.compile(r"\b(camera|webcam)\s+shows?\s+(a\s+)?(person|man|woman|face|someone)\b", re.IGNORECASE),
+]
+
+# Dedup: track last observation timestamps to avoid spamming
+_last_face_signal_ts: float = 0.0
+_FACE_DEDUP_SECS = 120   # only record a new face observation every 2 min
 
 
 def _extract_contact(text: str) -> str:
@@ -107,62 +133,119 @@ def _record_contact_signal(ts: float, app_name: str, title: str, ocr_text: str) 
         confidence=confidence,
     )
 
+    # Detect apology drafts — flag as observation so reasoning can notice
+    if direction == "outgoing" and action in ("draft", "reply"):
+        if any(p.search(ocr_text) for p in _APOLOGY_PATTERNS):
+            db.insert_observation(
+                "apology_draft",
+                f"User appears to be drafting an apology to {contact} via {channel}.",
+                source="screen",
+            )
 
-def _record_claim_signal(ts: float, app_name: str, title: str, ocr_text: str) -> None:
-    if not ocr_text:
-        return
+
+def _record_claim_signal(
+    ts: float,
+    app_name: str,
+    title: str,
+    ocr_text: str,
+    transcript_text: str = "",
+) -> None:
+    """
+    Detect any strong factual claim in screen OCR or audio transcripts.
+    Queues it for web verification via claim_verifier pipeline.
+    No hardcoded topics — covers anything.
+    """
     app = (app_name or "").lower()
-    if app not in _MEDIA_APPS and "youtube" not in (title or "").lower():
-        return
+    title_lower = (title or "").lower()
 
-    text = ocr_text.lower()
-    topic = ""
-    for t in _TOPIC_FACTS.keys():
-        if t in text:
-            topic = t
-            break
-    if not topic:
-        return
-
-    if not any(p.search(text) for p in _CLAIM_PATTERNS):
-        return
-
-    claim = ocr_text[:220]
-    verdict = f"Likely false or misleading. {_TOPIC_FACTS[topic]}"
-    db.insert_claim_event(
-        ts=ts,
-        topic=topic,
-        claim=claim,
-        verdict=verdict,
-        source_app=app,
-        evidence=ocr_text[:550],
-        confidence=0.82,
+    # Claims in audio are high-value (user is hearing a claim)
+    audio_claim = bool(transcript_text) and any(
+        p.search(transcript_text) for p in _STRONG_CLAIM_PATTERNS
     )
+
+    # Claims on screen are only signal if in media/browser context
+    screen_claim = (
+        bool(ocr_text)
+        and (app in _MEDIA_APPS or "youtube" in title_lower or "watch" in title_lower)
+        and any(p.search(ocr_text) for p in _STRONG_CLAIM_PATTERNS)
+    )
+
+    if not audio_claim and not screen_claim:
+        return
+
+    claim_text = transcript_text if audio_claim else ocr_text
+    source = "audio" if audio_claim else "screen"
+
+    # Queue for async verification (non-blocking)
+    try:
+        import asyncio
+        from brain.claim_verifier import detect_claims_from_context
+
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if loop and loop.is_running():
+            asyncio.create_task(
+                detect_claims_from_context(
+                    ocr_text=ocr_text if source == "screen" else "",
+                    transcript_text=transcript_text if source == "audio" else "",
+                    source=source,
+                )
+            )
+        else:
+            # Store raw signal for next reasoning cycle to pick up
+            db.insert_observation(
+                "claim_signal_pending",
+                f"Possible claim in {source}: {claim_text[:200]}",
+                source=source,
+            )
+    except Exception:
+        pass
 
 
 def _record_meeting_presence_signal(
     ts: float, app_name: str, title: str, ocr_text: str, focused_context: str
 ) -> None:
+    global _last_face_signal_ts
+
     if not ocr_text and not focused_context:
         return
 
     app = (app_name or "").lower()
     combined = f"{title}\n{focused_context}\n{ocr_text}".lower()
-    if app not in _MEETING_APPS and not any(
-        k in combined for k in ["zoom", "meeting", "call"]
-    ):
-        return
-
-    if not any(p.search(combined) for p in _MEETING_PRESENCE_PATTERNS):
-        return
-
-    evidence = (f"{title} | {focused_context} | {ocr_text}")[:500]
-    # Store as durable observation so world model can reference it.
-    db.insert_observation(
-        "meeting_presence_signal",
-        f"Possible additional participant/presence change detected in active call. Evidence: {evidence}",
-        source="screen",
+    in_call_app = app in _MEETING_APPS or any(
+        k in combined for k in ["zoom", "meeting", "call", "facetime", "webex", "google meet"]
     )
+
+    # Standard participant text patterns
+    if in_call_app and any(p.search(combined) for p in _MEETING_PRESENCE_PATTERNS):
+        evidence = f"{title} | {focused_context} | {ocr_text}"[:500]
+        db.insert_observation(
+            "meeting_presence_signal",
+            f"Possible additional participant/presence change detected in active call. Evidence: {evidence}",
+            source="screen",
+        )
+
+    # Vision-model face detection: look for person-in-video phrases in the LLM OCR output
+    # The vision model describes what it sees, so these patterns appear in ocr_text
+    if in_call_app and ocr_text and (ts - _last_face_signal_ts) > _FACE_DEDUP_SECS:
+        face_matches = [p for p in _VIDEO_FACE_PATTERNS if p.search(ocr_text)]
+        if len(face_matches) >= 1:
+            _last_face_signal_ts = ts
+            # Extract a short excerpt for context
+            excerpt = ocr_text[:300].replace("\n", " ")
+            db.insert_observation(
+                "video_call_face_detected",
+                (
+                    f"Vision model detected a person visible in video call frame "
+                    f"(app: {app_name}, title: {title[:60]}). "
+                    f"Description: {excerpt}"
+                ),
+                source="screen",
+            )
 
 
 def process_screen_signals(
@@ -171,10 +254,11 @@ def process_screen_signals(
     title: str,
     ocr_text: str,
     focused_context: str = "",
+    transcript_text: str = "",
 ) -> None:
-    """Extract high-signal context events from the latest screenshot OCR."""
+    """Extract high-signal context events from the latest screenshot OCR and audio transcript."""
     _record_contact_signal(ts, app_name, title, ocr_text)
-    _record_claim_signal(ts, app_name, title, ocr_text)
+    _record_claim_signal(ts, app_name, title, ocr_text, transcript_text)
     _record_meeting_presence_signal(ts, app_name, title, ocr_text, focused_context)
 
 
@@ -182,33 +266,53 @@ def build_high_signal_context() -> str:
     """Build compact latent context block for reasoning loop."""
     lines = []
 
+    # Communication pressure — repeated outgoing with no response
     pressure = db.get_contact_pressure_signals(window_days=14, limit=5)
     if pressure:
         lines.append("=== LONG-HORIZON CONTEXT ===")
         for r in pressure:
             outgoing = int(r.get("outgoing") or 0)
             incoming = int(r.get("incoming") or 0)
-            if outgoing >= 3 and outgoing > incoming:
+            if outgoing >= 2 and outgoing > incoming:
+                ratio = f"{outgoing} sent, {incoming} received"
                 lines.append(
-                    f"- Interaction pattern: {r['contact']} has {outgoing} outgoing vs {incoming} incoming in 14 days."
+                    f"- Communication pressure: {r['contact']} — {ratio} in 14 days (no reply)."
                 )
 
-    claims = db.get_recent_claim_events(window_hours=24, limit=5)
+    # Apology drafts — user writing apology to someone who ignored them
+    apology_obs = db.get_observations_by_type("apology_draft", limit=3)
+    if apology_obs:
+        if not lines:
+            lines.append("=== LONG-HORIZON CONTEXT ===")
+        for a in apology_obs:
+            lines.append(f"- {a['content']}")
+
+    # Verified claim results — web-checked facts
+    claims = db.get_recent_claim_events(window_hours=2, limit=5)
     if claims:
         if not lines:
             lines.append("=== LONG-HORIZON CONTEXT ===")
         for c in claims:
             lines.append(
-                f"- Potentially misleading media claim observed about {c['topic']}: {c['claim'][:120]}"
+                f"- Claim detected [{c.get('source_app', 'media')}]: \"{c['claim'][:100]}\""
             )
             if c.get("verdict"):
-                lines.append(f"  background fact: {c['verdict'][:120]}")
+                lines.append(f"  Verdict: {c['verdict'][:200]}")
 
-    meeting_presence = db.get_observations_by_type("meeting_presence_signal", limit=4)
+    # Meeting presence shifts
+    meeting_presence = db.get_observations_by_type("meeting_presence_signal", limit=3)
     if meeting_presence:
         if not lines:
             lines.append("=== LONG-HORIZON CONTEXT ===")
-        for m in meeting_presence[:3]:
+        for m in meeting_presence[:2]:
             lines.append(f"- Live meeting context shift: {m['content'][:160]}")
+
+    # Video call face detection — person visible in a video call frame
+    face_obs = db.get_observations_by_type("video_call_face_detected", limit=2)
+    if face_obs:
+        if not lines:
+            lines.append("=== LONG-HORIZON CONTEXT ===")
+        for f in face_obs[:2]:
+            lines.append(f"- {f['content'][:220]}")
 
     return "\n".join(lines)

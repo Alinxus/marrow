@@ -21,6 +21,7 @@ import hashlib
 import io
 import logging
 import platform
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -45,8 +46,45 @@ _last_vision_ts: float = 0.0
 _mac_screen_perm_warned: bool = False
 
 
+_OSASCRIPT_WINDOW = (
+    'tell application "System Events"\n'
+    '  set fp to first process whose frontmost is true\n'
+    '  set appN to name of fp\n'
+    '  set winT to ""\n'
+    '  try\n'
+    '    set winT to name of front window of fp\n'
+    '  end try\n'
+    '  return appN & "|" & winT\n'
+    'end tell'
+)
+
+
+def _get_active_window_mac() -> tuple[str, str, str]:
+    """Get foreground app + window title on macOS via osascript."""
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", _OSASCRIPT_WINDOW],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            out = result.stdout.strip()
+            parts = out.split("|", 1)
+            app_name = parts[0].strip().lower() if parts else "unknown"
+            window_title = parts[1].strip() if len(parts) > 1 else "unknown"
+            # Trim common macOS suffixes
+            return app_name, window_title, ""
+    except Exception as e:
+        log.debug(f"macOS window detection failed: {e}")
+    return "unknown", "unknown", ""
+
+
 def _get_active_window() -> tuple[str, str, str]:
     """Returns (app_name, window_title, focused_context) for the foreground window."""
+    if platform.system() == "Darwin":
+        return _get_active_window_mac()
+
     try:
         import uiautomation as auto
         import psutil
@@ -298,12 +336,19 @@ async def screen_capture_loop() -> None:
                 try:
                     from brain.context_awareness import process_screen_signals
 
+                    # Pull the most recent audio transcript to feed claim detection
+                    recent_transcripts = db.get_recent_context(30).get("transcripts", [])
+                    recent_audio = " ".join(
+                        t.get("text", "") for t in recent_transcripts[-3:]
+                    )
+
                     process_screen_signals(
                         ts,
                         app_name,
                         window_title,
                         ocr_text,
                         focused_context=focused_context,
+                        transcript_text=recent_audio,
                     )
                 except Exception as e:
                     log.debug(f"Signal extraction skipped: {e}")

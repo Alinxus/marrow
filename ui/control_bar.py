@@ -54,23 +54,23 @@ class ProactiveCard(QWidget):
         body_col.setContentsMargins(0, 0, 0, 0)
         body_col.setSpacing(2)
         body_col.addWidget(
-            _lbl("Proactive Insight", QColor(232, 232, 238), 8, bold=True)
+            _lbl("Proactive Insight", QColor(37, 99, 235), 8, bold=True)
         )
         txt = _lbl(
-            text[:130] + ("…" if len(text) > 130 else ""), QColor(175, 175, 185), 8
+            text[:130] + ("…" if len(text) > 130 else ""), QColor(40, 40, 58), 8
         )
         txt.setWordWrap(True)
         body_col.addWidget(txt)
-        body_col.addWidget(_lbl(f"urgency {self._urgency}", QColor(110, 110, 122), 7))
+        body_col.addWidget(_lbl(f"urgency {self._urgency}", QColor(110, 110, 130), 7))
         lay.addLayout(body_col, 1)
 
         open_btn = QPushButton("Open")
         open_btn.setFixedSize(48, 22)
         open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,16); color: rgba(235,235,240,240);"
-            " border: 1px solid rgba(255,255,255,24); border-radius: 11px; font-size: 8pt; }"
-            "QPushButton:hover { background: rgba(255,255,255,26); }"
+            "QPushButton { background: rgba(37,99,235,18); color: rgba(37,99,235,220);"
+            " border: 1px solid rgba(37,99,235,60); border-radius: 11px; font-size: 8pt; font-weight: 600; }"
+            "QPushButton:hover { background: rgba(37,99,235,32); }"
         )
         open_btn.clicked.connect(open_callback)
         lay.addWidget(open_btn, 0, Qt.AlignmentFlag.AlignTop)
@@ -79,8 +79,8 @@ class ProactiveCard(QWidget):
         x_btn.setFixedSize(18, 18)
         x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         x_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: rgba(150,150,160,200); border: none; }"
-            "QPushButton:hover { color: rgba(235,235,245,255); }"
+            "QPushButton { background: transparent; color: rgba(120,120,140,180); border: none; }"
+            "QPushButton:hover { color: rgba(12,12,22,220); }"
         )
         x_btn.clicked.connect(dismiss_callback)
         lay.addWidget(x_btn, 0, Qt.AlignmentFlag.AlignTop)
@@ -89,9 +89,11 @@ class ProactiveCard(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
-        p.setBrush(QColor(20, 20, 28, 214))
-        p.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+        p.setBrush(QColor(245, 247, 255, 210))
+        p.setPen(QPen(QColor(255, 255, 255, 190), 1.0))
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        p.setPen(QPen(QColor(0, 0, 0, 12), 0.5))
+        p.drawRoundedRect(r.adjusted(1.5, 1.5, -1.5, -1.5), 9, 9)
 
 
 class MarrowControlBar(QWidget):
@@ -142,12 +144,12 @@ class MarrowControlBar(QWidget):
 
         self._orb = MiniOrb(10)
         top_l.addWidget(self._orb)
-        top_l.addWidget(_lbl("MARROW", QColor(236, 236, 242), 10, bold=True))
+        top_l.addWidget(_lbl("MARROW", QColor(12, 12, 22), 10, bold=True))
 
-        self._focus_lbl = _lbl("idle", QColor(125, 125, 136), 8)
+        self._focus_lbl = _lbl("idle", QColor(90, 90, 108), 8)
         top_l.addWidget(self._focus_lbl)
 
-        self._state_lbl = _lbl("idle", QColor(160, 160, 172), 8)
+        self._state_lbl = _lbl("idle", QColor(120, 120, 140), 8)
         top_l.addWidget(self._state_lbl)
         top_l.addStretch()
 
@@ -158,8 +160,8 @@ class MarrowControlBar(QWidget):
         ask_btn.setFixedSize(44, 24)
         ask_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         ask_btn.setStyleSheet(
-            "QPushButton { background: rgba(96,165,250,180); color: white; border: none; border-radius: 12px; font-size: 8pt; }"
-            "QPushButton:hover { background: rgba(96,165,250,220); }"
+            "QPushButton { background: rgba(37,99,235,210); color: white; border: none; border-radius: 12px; font-size: 8pt; font-weight: 600; }"
+            "QPushButton:hover { background: rgba(37,99,235,245); }"
         )
         ask_btn.clicked.connect(self._ask)
         top_l.addWidget(ask_btn)
@@ -168,7 +170,8 @@ class MarrowControlBar(QWidget):
         pin_btn.setFixedSize(20, 20)
         pin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         pin_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: rgba(170,170,180,220); border: none; }"
+            "QPushButton { background: transparent; color: rgba(100,100,120,190); border: none; }"
+            "QPushButton:hover { color: rgba(12,12,22,220); }"
         )
         pin_btn.clicked.connect(self.toggle_expand)
         top_l.addWidget(pin_btn)
@@ -177,7 +180,8 @@ class MarrowControlBar(QWidget):
         set_btn.setFixedSize(20, 20)
         set_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         set_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: rgba(170,170,180,220); border: none; }"
+            "QPushButton { background: transparent; color: rgba(100,100,120,190); border: none; }"
+            "QPushButton:hover { color: rgba(12,12,22,220); }"
         )
         set_btn.clicked.connect(self.open_settings)
         top_l.addWidget(set_btn)
@@ -391,10 +395,30 @@ class MarrowControlBar(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
         path = QPainterPath()
-        path.addRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
-        p.fillPath(path, QColor(12, 12, 16, 246))
-        p.setPen(QPen(QColor(255, 255, 255, 22), 1.0))
+        path.addRoundedRect(r.adjusted(1.5, 1.5, -1.5, -1.5), 16, 16)
+
+        # Soft shadow
+        sp = QPainterPath()
+        sp.addRoundedRect(r.adjusted(-1, 4, 1, 5), 16, 16)
+        p.fillPath(sp, QColor(0, 0, 0, 18))
+
+        # White glass fill
+        p.fillPath(path, QColor(255, 255, 255, 218))
+
+        # Top shimmer
+        from PyQt6.QtGui import QLinearGradient
+        shimmer = QLinearGradient(0, 0, 0, 30)
+        shimmer.setColorAt(0.0, QColor(255, 255, 255, 90))
+        shimmer.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.fillPath(path, shimmer)
+
+        # Borders
+        p.setPen(QPen(QColor(255, 255, 255, 200), 1.2))
         p.drawPath(path)
+        p.setPen(QPen(QColor(0, 0, 0, 14), 0.7))
+        inner = QPainterPath()
+        inner.addRoundedRect(r.adjusted(2.5, 2.5, -2.5, -2.5), 15, 15)
+        p.drawPath(inner)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and event.pos().y() <= 52:

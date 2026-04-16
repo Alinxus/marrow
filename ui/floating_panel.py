@@ -56,21 +56,22 @@ from PyQt6.QtWidgets import (
 
 log = logging.getLogger(__name__)
 
-# ─── Palette ──────────────────────────────────────────────────────────────────
+# ─── Palette (white frosted glass) ───────────────────────────────────────────
 
-BG_COLOR        = QColor(12, 12, 14, 230)
-BG_LIGHTER      = QColor(20, 20, 24, 200)
-BORDER_COLOR    = QColor(255, 255, 255, 18)
-TEXT_PRIMARY    = QColor(230, 230, 235)
-TEXT_SECONDARY  = QColor(140, 140, 150)
-TEXT_DIM        = QColor(80, 80, 90)
-ACCENT_IDLE     = QColor(100, 100, 110)
-ACCENT_THINK    = QColor(251, 191, 36)     # amber
-ACCENT_SPEAK    = QColor(96, 165, 250)     # blue
-ACCENT_ACT      = QColor(74, 222, 128)     # green
-ACCENT_ERROR    = QColor(248, 113, 113)    # red
+BG_COLOR        = QColor(255, 255, 255, 215)
+BG_LIGHTER      = QColor(245, 247, 255, 190)
+BORDER_COLOR    = QColor(255, 255, 255, 200)
+BORDER_SHADOW   = QColor(0,   0,   0,   16)
+TEXT_PRIMARY    = QColor(12,  12,  22)
+TEXT_SECONDARY  = QColor(75,  75,  92)
+TEXT_DIM        = QColor(140, 140, 158)
+ACCENT_IDLE     = QColor(160, 160, 175)
+ACCENT_THINK    = QColor(234, 155,  10)    # amber
+ACCENT_SPEAK    = QColor(37,  99,  235)    # blue
+ACCENT_ACT      = QColor(22,  163,  74)    # green
+ACCENT_ERROR    = QColor(220,  38,  38)    # red
 PANEL_W         = 280
-PANEL_RADIUS    = 14
+PANEL_RADIUS    = 16
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -212,8 +213,8 @@ class MessageSection(QWidget):
         short = text[:140] + "…" if len(text) > 140 else text
         self._msg.setText(f'"{short}"')
 
-        u_color = {1: "#f87171", 2: "#fb923c", 3: "#60a5fa",
-                   4: "#4ade80", 5: "#9ca3af"}.get(urgency, "#9ca3af")
+        u_color = {1: "#dc2626", 2: "#ea580c", 3: "#2563eb",
+                   4: "#16a34a", 5: "#94a3b8"}.get(urgency, "#94a3b8")
         self._meta.setText(f'<span style="color:{u_color}">urgency {urgency}</span>')
         self._meta.setTextFormat(Qt.TextFormat.RichText)
 
@@ -226,8 +227,8 @@ class MessageSection(QWidget):
                 t = f"{delta // 60}m ago"
             else:
                 t = f"{delta // 3600}h ago"
-            u_color = {1: "#f87171", 2: "#fb923c", 3: "#60a5fa",
-                       4: "#4ade80", 5: "#9ca3af"}.get(self._last_urgency, "#9ca3af")
+            u_color = {1: "#dc2626", 2: "#ea580c", 3: "#2563eb",
+                       4: "#16a34a", 5: "#94a3b8"}.get(self._last_urgency, "#94a3b8")
             self._meta.setText(
                 f'{t} · <span style="color:{u_color}">urgency {self._last_urgency}</span>'
             )
@@ -404,7 +405,7 @@ class MarrowFloatingPanel(QWidget):
         self._ask_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._ask_btn.setStyleSheet("""
             QPushButton {
-                background: rgba(96,165,250,180);
+                background: rgba(37,99,235,210);
                 color: white;
                 border: none;
                 border-radius: 8px;
@@ -412,8 +413,8 @@ class MarrowFloatingPanel(QWidget):
                 font-weight: bold;
                 padding: 0 14px;
             }
-            QPushButton:hover  { background: rgba(96,165,250,220); }
-            QPushButton:pressed { background: rgba(59,130,246,220); }
+            QPushButton:hover  { background: rgba(37,99,235,245); }
+            QPushButton:pressed { background: rgba(29,78,216,245); }
         """)
         self._ask_btn.clicked.connect(self._on_ask)
         lay.addWidget(self._ask_btn)
@@ -430,11 +431,11 @@ class MarrowFloatingPanel(QWidget):
         btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
-                color: rgba(140,140,150,200);
+                color: rgba(100,100,120,180);
                 border: none;
                 font-size: 13px;
             }
-            QPushButton:hover { color: rgba(230,230,235,255); }
+            QPushButton:hover { color: rgba(12,12,22,220); }
         """)
         return btn
 
@@ -528,25 +529,35 @@ class MarrowFloatingPanel(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        rect = QRectF(1.5, 1.5, self.width() - 3, self.height() - 3)
         path = QPainterPath()
         path.addRoundedRect(rect, PANEL_RADIUS, PANEL_RADIUS)
 
-        # Fill
+        # Drop shadow
+        for off, alpha in ((5, 6), (3, 10), (1, 16)):
+            sp = QPainterPath()
+            sp.addRoundedRect(rect.adjusted(-1, off, 1, off + 2), PANEL_RADIUS, PANEL_RADIUS)
+            p.fillPath(sp, QColor(0, 0, 0, alpha))
+
+        # Glass fill
         p.fillPath(path, BG_COLOR)
 
-        # Border
-        p.setPen(QPen(BORDER_COLOR, 1.0))
+        # Top shimmer gradient
+        shimmer = QLinearGradient(0, 0, 0, 36)
+        shimmer.setColorAt(0.0, QColor(255, 255, 255, 110))
+        shimmer.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.fillPath(path, shimmer)
+
+        # Bright border (top/left glass edge)
+        p.setPen(QPen(BORDER_COLOR, 1.2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
 
-        # Top highlight (glass shimmer)
-        shimmer = QLinearGradient(0, 0, 0, 20)
-        shimmer.setColorAt(0, QColor(255, 255, 255, 18))
-        shimmer.setColorAt(1, QColor(255, 255, 255, 0))
-        top_path = QPainterPath()
-        top_rect = QRectF(0.5, 0.5, self.width() - 1, 20)
-        top_path.addRoundedRect(top_rect, PANEL_RADIUS, PANEL_RADIUS)
-        p.fillPath(top_path, shimmer)
+        # Subtle dark inner ring
+        p.setPen(QPen(BORDER_SHADOW, 0.7))
+        inner = QPainterPath()
+        inner.addRoundedRect(rect.adjusted(1, 1, -1, -1), PANEL_RADIUS - 1, PANEL_RADIUS - 1)
+        p.drawPath(inner)
 
     # ── Drag to move ──────────────────────────────────────────────────────
 
@@ -573,14 +584,15 @@ class MarrowFloatingPanel(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet("""
             QMenu {
-                background: rgba(20,20,24,240);
-                color: rgba(230,230,235,255);
-                border: 1px solid rgba(255,255,255,20);
-                border-radius: 6px;
+                background: rgba(255,255,255,240);
+                color: rgba(12,12,22,235);
+                border: 1px solid rgba(0,0,0,14);
+                border-radius: 8px;
                 padding: 4px;
+                font-size: 9pt;
             }
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
-            QMenu::item:selected { background: rgba(96,165,250,120); }
+            QMenu::item:selected { background: rgba(37,99,235,25); }
         """)
         menu.addAction("⚙  Settings", self._open_settings)
         menu.addSeparator()

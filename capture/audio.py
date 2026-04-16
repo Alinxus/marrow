@@ -19,6 +19,7 @@ import asyncio
 import logging
 import platform
 import queue
+import re
 import time
 import threading
 from collections import deque
@@ -73,7 +74,9 @@ def _check_wake_word(text: str) -> bool:
     text_lower = text.lower().strip()
 
     for wake_word in WAKE_WORDS:
-        if wake_word in text_lower:
+        # Word-boundary match: avoids false triggers on "borrow", "sorrow", etc.
+        pattern = r'\b' + re.escape(wake_word) + r'\b'
+        if re.search(pattern, text_lower):
             log.info(f"Wake word detected: {text[:50]}")
             return True
 
@@ -150,14 +153,6 @@ class AudioCaptureService:
         # Prefer Deepgram when explicitly requested or when auto+key exists.
         use_deepgram = bool(self._deepgram_key) and backend in ("auto", "deepgram")
         use_whisper = backend == "whisper" or (backend == "auto" and not use_deepgram)
-
-        # On macOS, default auto mode avoids local whisper import crashes on some CPUs.
-        if platform.system() == "Darwin" and backend == "auto" and not use_deepgram:
-            use_whisper = False
-            log.warning(
-                "macOS auto audio mode: local Whisper disabled by default for stability. "
-                "Set AUDIO_STT_BACKEND=whisper to force local Whisper, or configure Deepgram."
-            )
 
         if use_deepgram:
             log.info("Audio: Deepgram streaming enabled")

@@ -76,6 +76,9 @@ class MarrowBridge(QObject):
     # Task result from executor: (result_text,)
     task_response = pyqtSignal(str)
 
+    # Claim verified: JSON string {claim, verdict, explanation, sources, confidence}
+    claim_verified = pyqtSignal(str)
+
     # ── UI → Backend signals ──────────────────────────────────────────────
     # User pressed "Ask Marrow" button — triggers on-demand activation
     ask_requested = pyqtSignal()

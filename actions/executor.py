@@ -37,6 +37,7 @@ Ported from Hermes:
 import asyncio
 import json
 import logging
+import platform
 import re
 import subprocess
 from pathlib import Path
@@ -58,16 +59,16 @@ MARROW_TOOLS = [
     {
         "name": "run_command",
         "description": (
-            "Run a shell command on the user's Windows machine via PowerShell. "
-            "Use for: file operations, email via himalaya CLI, calendar lookups, "
-            "git operations, any CLI task."
+            "Run a shell command. Uses bash on macOS/Linux, PowerShell on Windows. "
+            "Use for: file operations, launching apps, email/calendar via CLI or AppleScript (macOS) "
+            "or Outlook COM (Windows), git operations, any terminal task."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "PowerShell command to run",
+                    "description": "Shell command to run (bash on macOS/Linux, PowerShell on Windows)",
                 },
                 "explanation": {
                     "type": "string",
@@ -808,6 +809,29 @@ MARROW_TOOLS = [
             "required": ["path"],
         },
     },
+    # Fact checking
+    {
+        "name": "fact_check",
+        "description": (
+            "Verify a factual claim against multiple web sources. "
+            "Returns a verdict (true/false/misleading/unverified), explanation, and source URLs. "
+            "Use whenever the user or media makes a claim that can be verified."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "claim": {
+                    "type": "string",
+                    "description": "The factual claim to verify",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Optional: where this claim was made (e.g. 'YouTube video', 'news article')",
+                },
+            },
+            "required": ["claim"],
+        },
+    },
     # Complex task execution
     {
         "name": "execute_complex",
@@ -1077,8 +1101,10 @@ MARROW_TOOLS = [
 
 
 def _terminal_exec(command: str, timeout: int = 30) -> str:
-    """Run a PowerShell command. Returns stdout+stderr, capped at 3000 chars."""
-    # Check approval first
+    """
+    Run a shell command. Returns stdout+stderr, capped at 3000 chars.
+    Uses bash on macOS/Linux, PowerShell on Windows.
+    """
     from actions import approval
 
     should_proceed, reason = approval.check_approval(
@@ -1089,17 +1115,29 @@ def _terminal_exec(command: str, timeout: int = 30) -> str:
         return f"[BLOCKED] {reason}"
 
     try:
-        # Wrap in PowerShell for Windows consistency
-        ps_cmd = ["powershell", "-NoProfile", "-Command", command]
-        result = subprocess.run(
-            ps_cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(Path.home()),
-            encoding="utf-8",
-            errors="replace",
-        )
+        if platform.system() == "Windows":
+            cmd_args = ["powershell", "-NoProfile", "-Command", command]
+            result = subprocess.run(
+                cmd_args,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(Path.home()),
+                encoding="utf-8",
+                errors="replace",
+            )
+        else:
+            result = subprocess.run(
+                command,
+                shell=True,
+                executable="/bin/bash",
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(Path.home()),
+                encoding="utf-8",
+                errors="replace",
+            )
         output = (result.stdout + result.stderr).strip()
         if len(output) > 3000:
             output = output[:3000] + "\n[... truncated]"
@@ -1107,7 +1145,7 @@ def _terminal_exec(command: str, timeout: int = 30) -> str:
     except subprocess.TimeoutExpired:
         return f"[timed out after {timeout}s]"
     except FileNotFoundError:
-        # PowerShell not in PATH — try cmd
+        # PowerShell not in PATH on Windows — fall back to cmd
         try:
             result = subprocess.run(
                 command,
@@ -1158,11 +1196,47 @@ def _web_fetch(url: str, max_chars: int = 3000) -> str:
         return f"[fetch error: {e}]"
 
 
+def _get_emails_mac(hours: int = 24, max_count: int = 10) -> str:
+    """Fetch emails on macOS via AppleScript (Mail.app) or himalaya fallback."""
+    script = (
+        f'tell application "Mail"\n'
+        f'  set msgs to (messages of inbox whose read status is false)\n'
+        f'  set result to ""\n'
+        f'  set n to 0\n'
+        f'  repeat with m in msgs\n'
+        f'    if n >= {max_count} then exit repeat\n'
+        f'    set result to result & (sender of m) & ": " & (subject of m) & "\\n"\n'
+        f'    set n to n + 1\n'
+        f'  end repeat\n'
+        f'  if result is "" then return "No unread emails"\n'
+        f'  return result\n'
+        f'end tell'
+    )
+    result = _terminal_exec(f"osascript -e '{script}'", timeout=10)
+    if result and "[error" not in result.lower() and "not running" not in result.lower():
+        return f"Unread emails (Mail.app):\n{result}"
+
+    # Fallback: himalaya CLI
+    himalaya = _terminal_exec(f"himalaya envelope list --max-width 80 --limit {max_count}", timeout=10)
+    if himalaya and "[error]" not in himalaya.lower() and "command not found" not in himalaya.lower():
+        return f"Emails (himalaya):\n{himalaya}"
+
+    return (
+        "[Email access unavailable] Open Mail.app and ensure an account is configured, "
+        "or install himalaya CLI (`brew install himalaya`) for terminal access."
+    )
+
+
 def _get_emails(hours: int = 24, max_count: int = 10, unread_only: bool = True) -> str:
     """
-    Fetch recent emails via PowerShell + Outlook COM, or Gmail CLI, or himalaya.
+    Fetch recent emails via platform-native method.
+    macOS: AppleScript (Mail.app) → himalaya
+    Windows: PowerShell Outlook COM → himalaya
     Falls back gracefully with instructions if nothing is available.
     """
+    if platform.system() == "Darwin":
+        return _get_emails_mac(hours, max_count)
+
     # Try Outlook COM via PowerShell (works if Outlook is installed)
     unread_filter = "AND [Unread]=True" if unread_only else ""
     cutoff_date = f"AND [ReceivedTime] > '{__import__('datetime').datetime.now() - __import__('datetime').timedelta(hours=hours)}'"
@@ -1214,11 +1288,37 @@ try {{
     return f"Recent emails (last {hours}h):\n{result}" if result else "No emails found."
 
 
+def _get_calendar_mac(days: int = 1) -> str:
+    """Fetch calendar events on macOS via AppleScript (Calendar.app)."""
+    script = (
+        'tell application "Calendar"\n'
+        '  set result to ""\n'
+        '  repeat with c in calendars\n'
+        '    set evts to (events of c whose start date >= (current date) and start date <= ((current date) + '
+        f'{days * 86400}))\n'
+        '    repeat with e in evts\n'
+        '      set result to result & (summary of e) & " @ " & ((start date of e) as string) & "\\n"\n'
+        '    end repeat\n'
+        '  end repeat\n'
+        '  if result is "" then return "No events"\n'
+        '  return result\n'
+        'end tell'
+    )
+    result = _terminal_exec(f"osascript << 'EOF'\n{script}\nEOF", timeout=10)
+    if result and "[error" not in result.lower():
+        return f"Calendar (Calendar.app):\n{result}"
+    return "[Calendar access unavailable] Open Calendar.app and ensure events are synced."
+
+
 def _get_calendar(days: int = 1) -> str:
     """
-    Fetch calendar events via PowerShell + Outlook COM.
-    Falls back to instructions if Outlook unavailable.
+    Fetch calendar events via platform-native method.
+    macOS: AppleScript (Calendar.app)
+    Windows: PowerShell Outlook COM
+    Falls back to instructions if nothing available.
     """
+    if platform.system() == "Darwin":
+        return _get_calendar_mac(days)
     end_date = (
         __import__("datetime").datetime.now()
         + __import__("datetime").timedelta(days=days)
@@ -1876,6 +1976,31 @@ async def _async_handle_tool_call(
         return await app_mod.screenshot_region(
             tool_input["x"], tool_input["y"], tool_input["width"], tool_input["height"]
         )
+
+    # Fact checking
+    elif tool_name == "fact_check":
+        from brain.claim_verifier import _verify_claim, Claim
+
+        claim_obj = Claim(
+            text=tool_input["claim"],
+            topic="general",
+            source=tool_input.get("context", "user"),
+            confidence=1.0,
+        )
+        result = await _verify_claim(claim_obj)
+        if result:
+            sources = "\n".join(f"  • {s}" for s in result.sources[:3])
+            verdict_label = {
+                "false": "FALSE",
+                "true": "CONFIRMED",
+                "misleading": "MISLEADING",
+                "unverified": "UNVERIFIED",
+            }.get(result.verdict, result.verdict.upper())
+            out = f"[{verdict_label}] {result.explanation}"
+            if sources:
+                out += f"\nSources:\n{sources}"
+            return out
+        return "[unverified] Could not find sufficient evidence to verify this claim."
 
     return f"[unknown tool: {tool_name}]"
 

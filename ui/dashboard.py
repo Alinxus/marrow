@@ -55,22 +55,23 @@ from PyQt6.QtWidgets import (
 
 log = logging.getLogger(__name__)
 
-# ─── Palette ──────────────────────────────────────────────────────────────────
+# ─── Palette (white frosted glass) ───────────────────────────────────────────
 
-BG = QColor(10, 10, 14, 248)
-BG_SECTION = QColor(18, 18, 24, 180)
-BG_INPUT = QColor(22, 22, 28, 220)
-BORDER = QColor(255, 255, 255, 22)
-TEXT_PRI = QColor(240, 240, 245)
-TEXT_SEC = QColor(160, 160, 170)
-TEXT_DIM = QColor(80, 80, 90)
-TEXT_USER = QColor(180, 180, 190)
-TEXT_MARROW = QColor(235, 235, 242)  # white — Marrow's text
-ACCENT = QColor(220, 220, 232)  # silver-white accent
-ACCENT_G = QColor(74, 222, 128)
-ACCENT_A = QColor(251, 191, 36)
-MIC_ON = QColor(74, 222, 128)
-MIC_OFF = QColor(72, 72, 82)
+BG = QColor(255, 255, 255, 218)
+BG_SECTION = QColor(245, 247, 255, 180)
+BG_INPUT = QColor(240, 242, 255, 220)
+BORDER = QColor(255, 255, 255, 200)
+BORDER_DARK = QColor(0, 0, 0, 14)
+TEXT_PRI = QColor(12, 12, 22)
+TEXT_SEC = QColor(70, 70, 88)
+TEXT_DIM = QColor(140, 140, 158)
+TEXT_USER = QColor(30, 40, 90)        # user chat: dark blue
+TEXT_MARROW = QColor(15, 15, 25)      # Marrow's text: near-black
+ACCENT = QColor(37, 99, 235)          # blue accent
+ACCENT_G = QColor(22, 163, 74)        # green
+ACCENT_A = QColor(234, 155, 10)       # amber
+MIC_ON = QColor(22, 163, 74)
+MIC_OFF = QColor(180, 180, 195)
 
 DASH_W = 360
 DASH_H = 620
@@ -260,7 +261,7 @@ class NotificationCard(QWidget):
         lay.setSpacing(10)
 
         icon = QLabel("🔔")
-        icon.setStyleSheet("font-size: 14px; color: rgba(235,235,242,240);")
+        icon.setStyleSheet("font-size: 14px; background: transparent;")
         lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
 
         text_col = QVBoxLayout()
@@ -287,14 +288,14 @@ class NotificationCard(QWidget):
         self._open_btn.setFixedSize(52, 24)
         self._open_btn.setStyleSheet("""
             QPushButton {
-                background: rgba(255,255,255,14);
-                color: rgba(232,232,238,240);
-                border: 1px solid rgba(255,255,255,24);
+                background: rgba(37,99,235,18);
+                color: rgba(37,99,235,230);
+                border: 1px solid rgba(37,99,235,60);
                 border-radius: 12px;
                 font-size: 8pt;
                 font-weight: 600;
             }
-            QPushButton:hover { background: rgba(255,255,255,22); }
+            QPushButton:hover { background: rgba(37,99,235,32); }
         """)
         self._open_btn.clicked.connect(self.open_requested.emit)
         lay.addWidget(self._open_btn, 0, Qt.AlignmentFlag.AlignTop)
@@ -303,8 +304,8 @@ class NotificationCard(QWidget):
         self._dismiss_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._dismiss_btn.setFixedSize(20, 20)
         self._dismiss_btn.setStyleSheet("""
-            QPushButton { background: transparent; color: rgba(150,150,160,190); border: none; }
-            QPushButton:hover { color: rgba(225,225,235,255); }
+            QPushButton { background: transparent; color: rgba(120,120,140,180); border: none; }
+            QPushButton:hover { color: rgba(12,12,22,220); }
         """)
         self._dismiss_btn.clicked.connect(self._dismiss)
         lay.addWidget(self._dismiss_btn, 0, Qt.AlignmentFlag.AlignTop)
@@ -345,8 +346,8 @@ class NotificationCard(QWidget):
             5: QColor(74, 222, 128),
         }.get(self._urgency, QColor(96, 165, 250))
 
-        p.setBrush(QColor(20, 20, 28, 210))
-        p.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+        p.setBrush(QColor(248, 249, 255, 210))
+        p.setPen(QPen(QColor(255, 255, 255, 190), 1.0))
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
 
         p.setBrush(urgency_color)
@@ -401,10 +402,10 @@ class ChatSection(QWidget):
         self._scroll.setMinimumHeight(120)
         self._scroll.setMaximumHeight(180)
         self._scroll.setStyleSheet("""
-            QScrollArea { background: rgba(16,16,22,160); border: 1px solid rgba(255,255,255,10);
+            QScrollArea { background: rgba(240,242,255,120); border: 1px solid rgba(0,0,0,10);
                           border-radius: 8px; }
-            QScrollBar:vertical { background: transparent; width: 3px; }
-            QScrollBar::handle:vertical { background: rgba(255,255,255,25); border-radius: 2px; }
+            QScrollBar:vertical { background: transparent; width: 4px; }
+            QScrollBar::handle:vertical { background: rgba(37,99,235,50); border-radius: 2px; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         """)
 
@@ -431,16 +432,16 @@ class ChatSection(QWidget):
         self._input.setFixedHeight(34)
         self._input.setStyleSheet("""
             QLineEdit {
-                background: rgba(22, 22, 30, 200);
-                color: rgba(235, 235, 242, 255);
-                border: 1px solid rgba(255,255,255,18);
+                background: rgba(248, 250, 255, 220);
+                color: rgba(12, 12, 22, 240);
+                border: 1px solid rgba(0,0,0,14);
                 border-radius: 8px;
                 padding: 0 10px;
                 font-size: 9pt;
             }
             QLineEdit:focus {
-                border: 1px solid rgba(220,220,232,90);
-                background: rgba(28, 28, 38, 240);
+                border: 1px solid rgba(37,99,235,120);
+                background: rgba(255, 255, 255, 255);
             }
         """)
         self._input.returnPressed.connect(self._submit)
@@ -451,13 +452,13 @@ class ChatSection(QWidget):
         send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         send_btn.setStyleSheet("""
             QPushButton {
-                background: rgba(220,220,232,30);
-                color: rgba(220,220,232,255);
-                border: 1px solid rgba(220,220,232,60);
+                background: rgba(37,99,235,200);
+                color: white;
+                border: none;
                 border-radius: 8px; font-size: 14px; font-weight: bold;
             }
-            QPushButton:hover { background: rgba(220,220,232,55); }
-            QPushButton:pressed { background: rgba(220,220,232,80); }
+            QPushButton:hover { background: rgba(37,99,235,240); }
+            QPushButton:pressed { background: rgba(29,78,216,240); }
         """)
         send_btn.clicked.connect(self._submit)
         input_row.addWidget(send_btn)
@@ -858,33 +859,31 @@ class MarrowDashboard(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
 
-        # Shadow
-        shadow = QRadialGradient(QPointF(r.center().x(), r.bottom()), r.width() * 0.8)
-        shadow.setColorAt(0.0, QColor(0, 0, 0, 55))
-        shadow.setColorAt(1.0, QColor(0, 0, 0, 0))
-        p.setBrush(shadow)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(r.adjusted(6, 6, -6, -6), RADIUS, RADIUS)
+        # Drop shadow (soft, layered)
+        for off, alpha in ((6, 6), (4, 10), (2, 16)):
+            sp = QPainterPath()
+            sp.addRoundedRect(r.adjusted(-1, off, 1, off + 2), RADIUS, RADIUS)
+            p.fillPath(sp, QColor(0, 0, 0, alpha))
 
         # Glass background
-        p.setBrush(BG)
-        p.drawRoundedRect(r, RADIUS, RADIUS)
+        path = QPainterPath()
+        path.addRoundedRect(r, RADIUS, RADIUS)
+        p.fillPath(path, BG)
 
         # Top shimmer
-        shimmer = QLinearGradient(0, 0, 0, 80)
-        shimmer.setColorAt(0.0, QColor(255, 255, 255, 9))
+        shimmer = QLinearGradient(0, 0, 0, 50)
+        shimmer.setColorAt(0.0, QColor(255, 255, 255, 100))
         shimmer.setColorAt(1.0, QColor(255, 255, 255, 0))
-        p.setBrush(shimmer)
-        clip = QPainterPath()
-        clip.addRoundedRect(r, RADIUS, RADIUS)
-        p.setClipPath(clip)
-        p.drawRect(r)
-        p.setClipping(False)
+        p.fillPath(path, shimmer)
 
-        # Border
+        # Outer bright border
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(BORDER, 1))
+        p.setPen(QPen(BORDER, 1.2))
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
+
+        # Inner dark ring
+        p.setPen(QPen(BORDER_DARK, 0.7))
+        p.drawRoundedRect(r.adjusted(1.5, 1.5, -1.5, -1.5), RADIUS - 1, RADIUS - 1)
 
     # ── Drag ─────────────────────────────────────────────────────────────
 

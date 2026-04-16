@@ -418,6 +418,17 @@ async def _main_async() -> None:
                 await asyncio.sleep(5)
         log.info(f"{name} stopped.")
 
+    # ── Claim verifier loop ───────────────────────────────────────────────
+    async def _claim_verifier_loop():
+        try:
+            from brain.claim_verifier import claim_verification_loop
+
+            await claim_verification_loop()
+        except Exception as e:
+            log.warning(f"Claim verifier unavailable: {e}")
+            while not _shutdown_event.is_set():
+                await asyncio.sleep(60)
+
     # ── Wiki: load on startup ─────────────────────────────────────────────
     try:
         from brain.wiki import get_wiki, wiki_update_loop
@@ -440,6 +451,7 @@ async def _main_async() -> None:
         asyncio.create_task(_supervised("reasoning", reasoning_loop, interrupt_engine)),
         asyncio.create_task(_supervised("wiki_update", wiki_update_loop)),
         asyncio.create_task(_supervised("agi", agi_loop)),
+        asyncio.create_task(_supervised("claim_verifier", _claim_verifier_loop)),
         asyncio.create_task(_stats_loop()),
         asyncio.create_task(_shutdown_event.wait()),
     ]
@@ -675,6 +687,24 @@ def _run_qt() -> None:
         get_bridge().approval_requested.connect(show_approval_dialog)
     except Exception as e:
         log.warning(f"Approval bridge wire failed: {e}")
+
+    # ── Claim verification cards ──────────────────────────────────────────
+    try:
+        from ui.bridge import get_bridge as _gb2
+        from ui.claim_card import get_claim_card_manager
+        import json as _json
+
+        _claim_mgr = get_claim_card_manager()
+
+        def _on_claim_verified(json_str: str):
+            try:
+                _claim_mgr.show_claim(_json.loads(json_str))
+            except Exception as e:
+                log.warning(f"Claim card show failed: {e}")
+
+        _gb2().claim_verified.connect(_on_claim_verified)
+    except Exception as e:
+        log.warning(f"Claim card wire failed: {e}")
 
     # ── Toast notifications ────────────────────────────────────────────────
     try:
