@@ -125,11 +125,43 @@ class AudioCaptureService:
             return
 
         self._deepgram_key = config.DEEPGRAM_API_KEY
+        backend = (getattr(config, "AUDIO_STT_BACKEND", "auto") or "auto").lower()
 
-        if self._deepgram_key:
+        if backend == "none":
+            log.info("Audio STT backend set to 'none' — listening disabled")
+            self._deepgram_key = ""
+            self._model = None
+            self._audio_queue: queue.Queue = queue.Queue()
+            self._running = False
+            self._loop = None
+            return
+
+        if backend == "deepgram" and not self._deepgram_key:
+            log.warning(
+                "AUDIO_STT_BACKEND=deepgram but DEEPGRAM_API_KEY missing — listening disabled"
+            )
+            self._model = None
+            self._audio_queue: queue.Queue = queue.Queue()
+            self._running = False
+            self._loop = None
+            return
+
+        # Prefer Deepgram when explicitly requested or when auto+key exists.
+        use_deepgram = bool(self._deepgram_key) and backend in ("auto", "deepgram")
+        use_whisper = backend == "whisper" or (backend == "auto" and not use_deepgram)
+
+        # On macOS, default auto mode avoids local whisper import crashes on some CPUs.
+        if platform.system() == "Darwin" and backend == "auto" and not use_deepgram:
+            use_whisper = False
+            log.warning(
+                "macOS auto audio mode: local Whisper disabled by default for stability. "
+                "Set AUDIO_STT_BACKEND=whisper to force local Whisper, or configure Deepgram."
+            )
+
+        if use_deepgram:
             log.info("Audio: Deepgram streaming enabled")
             self._model = None
-        else:
+        elif use_whisper:
             log.info(f"Audio: Whisper fallback ({config.WHISPER_MODEL})")
             try:
                 from faster_whisper import WhisperModel
@@ -147,6 +179,12 @@ class AudioCaptureService:
                 self._deepgram_key = ""
                 self._running = False
                 self._audio_backend_error = str(e)
+        else:
+            log.info(
+                "Audio STT backend unavailable in current mode — listening disabled"
+            )
+            self._model = None
+            self._deepgram_key = ""
 
         self._audio_queue: queue.Queue = queue.Queue()
         self._running = False

@@ -15,6 +15,7 @@ coroutines on it — the only correct way to cross the thread/async boundary.
 
 import asyncio
 import logging
+import platform
 import sys
 import threading
 from pathlib import Path
@@ -54,6 +55,7 @@ def activate_marrow(reason: str = "hotkey") -> None:
 
 
 # ─── Hotkey listener (Windows) ─────────────────────────────────────────────────
+
 
 def _hotkey_listener_windows() -> None:
     """Listen for hotkey using Windows RegisterHotKey (no admin required)."""
@@ -95,14 +97,19 @@ def _hotkey_listener_fallback() -> None:
     """Fallback hotkey using the `keyboard` package."""
     try:
         import keyboard
+
         hotkey = config.ON_DEMAND_HOTKEY
         keyboard.add_hotkey(hotkey, lambda: activate_marrow("hotkey"))
         log.info(f"Hotkey listener active (keyboard package): {hotkey}")
         keyboard.wait()  # blocks forever
     except ImportError:
-        log.warning("keyboard package not installed — hotkey disabled. Run: pip install keyboard")
+        log.warning(
+            "keyboard package not installed — hotkey disabled. Run: pip install keyboard (or set HOTKEY_ENABLED=0)."
+        )
     except Exception as e:
-        log.warning(f"Hotkey fallback failed: {e}")
+        log.warning(
+            f"Hotkey fallback failed: {e}. On macOS, grant Accessibility permission for Terminal/Python, or set HOTKEY_ENABLED=0."
+        )
 
 
 def _start_hotkey_listener() -> None:
@@ -110,11 +117,18 @@ def _start_hotkey_listener() -> None:
     if not config.HOTKEY_ENABLED:
         log.info("Hotkey disabled by config")
         return
-    _hotkey_thread = threading.Thread(target=_hotkey_listener_windows, daemon=True)
+    if platform.system() == "Windows":
+        target = _hotkey_listener_windows
+    else:
+        target = _hotkey_listener_fallback
+        log.info("Using fallback hotkey listener on non-Windows platform")
+
+    _hotkey_thread = threading.Thread(target=target, daemon=True)
     _hotkey_thread.start()
 
 
 # ─── Wake word ─────────────────────────────────────────────────────────────────
+
 
 def check_wake_word(text: str) -> bool:
     text_lower = text.lower().strip()
@@ -126,6 +140,7 @@ def check_wake_word(text: str) -> bool:
 
 
 # ─── CLI ───────────────────────────────────────────────────────────────────────
+
 
 async def handle_cli_query(query: str) -> str:
     from actions import executor
@@ -143,6 +158,7 @@ async def handle_cli_query(query: str) -> str:
 
 # ─── Init ──────────────────────────────────────────────────────────────────────
 
+
 def set_activation_callback(callback: Callable) -> None:
     global _activation_callback
     _activation_callback = callback
@@ -155,6 +171,7 @@ def init_on_demand() -> None:
 
 
 # ─── CLI entry point ───────────────────────────────────────────────────────────
+
 
 def cli_main() -> None:
     if len(sys.argv) < 3 or sys.argv[1] != "ask":

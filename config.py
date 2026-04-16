@@ -56,6 +56,8 @@ AUDIO_INPUT_DEVICE = os.environ.get("AUDIO_INPUT_DEVICE", "")
 
 # Audio — "small" is the minimum for decent accuracy; "medium" is better but slower
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
+# Audio STT backend: auto | whisper | deepgram | none
+AUDIO_STT_BACKEND = os.environ.get("AUDIO_STT_BACKEND", "auto").lower()
 
 # RetainDB
 RETAINDB_API_KEY = os.environ.get("RETAINDB_API_KEY", "")
