@@ -398,6 +398,23 @@ def _run_qt() -> None:
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Marrow")
 
+    # Start backend only after QApplication exists on main thread.
+    # This avoids Windows DPI/context races and keeps Qt ownership correct.
+    backend_thread = {"t": None}
+
+    def _start_backend_once():
+        if backend_thread["t"] is not None:
+            return
+        t = threading.Thread(
+            target=_run_asyncio_backend,
+            name="marrow-asyncio",
+            daemon=True,
+        )
+        t.start()
+        backend_thread["t"] = t
+
+    QTimer.singleShot(0, _start_backend_once)
+
     # ── Unified floating control bar ───────────────────────────────────────
     from ui.control_bar import MarrowControlBar
 
@@ -503,21 +520,8 @@ def _run_qt() -> None:
 
 def main() -> None:
     _setup_logging()
-
-    # Start asyncio backend in a daemon thread first
-    backend = threading.Thread(
-        target=_run_asyncio_backend,
-        name="marrow-asyncio",
-        daemon=True,
-    )
-    backend.start()
-
-    # Small delay to let the loop start and assign _asyncio_loop
-    import time
-
-    time.sleep(0.15)
-
-    # Qt runs on the main thread (required on Windows)
+    # Qt must own the main thread on Windows.
+    # Backend starts from inside _run_qt once QApplication is alive.
     _run_qt()
 
 
