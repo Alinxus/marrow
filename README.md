@@ -36,20 +36,66 @@ Set `LLM_PROVIDER` in `.env`:
 
 Marrow now starts even if keys are missing.
 
-## Quick Start (Windows)
+## Installation Guide
+
+### Windows (PowerShell)
 
 ```powershell
 cd C:\Users\user\Downloads\omi\marrow
 
-python -m venv .venv
-.venv\Scripts\activate
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
 
-pip install -e .
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
+
 copy .env.example .env
-
-# then edit .env
 python main.py
 ```
+
+### macOS (zsh/bash)
+
+```bash
+cd ~/Downloads/omi/marrow
+
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
+
+cp .env.example .env
+python main.py
+```
+
+Optional macOS audio dependencies:
+
+```bash
+brew install portaudio ffmpeg
+```
+
+## Dependency Conflicts (Important)
+
+If installs fail due to package conflicts, use this clean-room flow:
+
+1. Delete old virtual env (`.venv`) and recreate it.
+2. Upgrade packaging tools before installing (`pip`, `setuptools`, `wheel`).
+3. Install Marrow with `pip install -e .`.
+
+If conflict persists, run:
+
+```bash
+python -m pip check
+python -m pip freeze > pip-lock-debug.txt
+```
+
+Then reinstall from a fresh env again.
+
+Notes:
+
+- Marrow supports missing optional services (cloud keys, audio, etc.) and should still boot.
+- For local-only runs, set `LLM_PROVIDER=ollama` (or `none` for capture-only mode).
+- On Windows, if mic device errors appear, set `AUDIO_INPUT_DEVICE` explicitly or `AUDIO_ENABLED=0`.
 
 ## Recommended `.env` Baseline
 

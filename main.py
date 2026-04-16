@@ -10,8 +10,7 @@ Communication:
   Qt → asyncio : run_coroutine_threadsafe(coro, _asyncio_loop)
 
 UI architecture:
-  MarrowOrb       — tiny always-on-top pulsing orb (56×56) in corner
-  MarrowDashboard — full panel, opens/closes when orb is clicked
+  MarrowControlBar — compact floating bar with hover expansion and chat
   ToastManager    — slide-in text notifications (substitute for voice)
   ApprovalDialog  — dangerous-action confirmation popup
   SettingsPanel   — settings editor
@@ -303,7 +302,7 @@ async def _main_async() -> None:
 
 async def _execute_user_task(text: str) -> None:
     """
-    Execute a task typed by the user in the dashboard.
+    Execute a task typed by the user in the control bar chat.
     Runs on the asyncio loop, called from Qt thread via run_coroutine_threadsafe.
     """
     from actions.executor import execute_action
@@ -341,7 +340,7 @@ def _run_asyncio_backend() -> None:
 # ─── Qt frontend ──────────────────────────────────────────────────────────────
 
 
-def _build_tray(app, orb):
+def _build_tray(app, toggle_cb):
     """Optional system tray icon."""
     if not config.TRAY_ENABLED:
         return None
@@ -373,15 +372,13 @@ def _build_tray(app, orb):
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
             QMenu::item:selected { background: rgba(96,165,250,80); }
         """)
-        menu.addAction("Toggle Dashboard", lambda: orb.dashboard_toggle.emit())
+        menu.addAction("Toggle Marrow", toggle_cb)
         menu.addSeparator()
         menu.addAction("Quit", lambda: (_request_shutdown(), app.quit()))
         icon.setContextMenu(menu)
         icon.activated.connect(
             lambda r: (
-                orb.dashboard_toggle.emit()
-                if r == QSystemTrayIcon.ActivationReason.Trigger
-                else None
+                toggle_cb() if r == QSystemTrayIcon.ActivationReason.Trigger else None
             )
         )
         icon.setToolTip(f"{config.MARROW_NAME} — ambient intelligence")
@@ -401,25 +398,11 @@ def _run_qt() -> None:
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Marrow")
 
-    # ── Orb (always-there presence) ───────────────────────────────────────
-    from ui.orb import MarrowOrb
+    # ── Unified floating control bar ───────────────────────────────────────
+    from ui.control_bar import MarrowControlBar
 
-    orb = MarrowOrb()
-    orb.connect_bridge()
-    orb.show()
-
-    # ── Dashboard (opens on orb click) ────────────────────────────────────
-    from ui.dashboard import MarrowDashboard
-
-    dashboard = MarrowDashboard()
-
-    def _toggle_dashboard():
-        if dashboard.isVisible():
-            dashboard.hide()
-        else:
-            dashboard.open_near(orb.geometry())
-
-    orb.dashboard_toggle.connect(_toggle_dashboard)
+    control_bar = MarrowControlBar()
+    control_bar.show()
 
     # ── Settings panel ────────────────────────────────────────────────────
     settings_panel = [None]  # lazy singleton
@@ -435,15 +418,12 @@ def _run_qt() -> None:
         except Exception as e:
             log.warning(f"Settings panel error: {e}")
 
-    orb.settings_requested.connect(_show_settings)
-    dashboard.settings_requested.connect(_show_settings)
+    # settings available from control bar and tray
 
     # ── Quit ─────────────────────────────────────────────────────────────
     def _quit():
         _request_shutdown()
         app.quit()
-
-    orb.quit_requested.connect(_quit)
 
     # ── Text task: connect from Qt main thread (required for signal safety) ──
     try:
@@ -483,10 +463,10 @@ def _run_qt() -> None:
         # Also wire message_spoken → toast (shows what Marrow said visually)
         def _on_message_spoken(text: str, urgency: int):
             def _open_context():
-                if not dashboard.isVisible():
-                    dashboard.open_near(orb.geometry())
+                if not control_bar.isVisible():
+                    control_bar.show()
                 try:
-                    dashboard._open_notification_context()
+                    control_bar.open_with_notification_context(text)
                 except Exception:
                     pass
 
@@ -513,7 +493,7 @@ def _run_qt() -> None:
     checker.start(1000)
 
     # ── Tray ─────────────────────────────────────────────────────────────
-    _build_tray(app, orb)
+    _build_tray(app, control_bar.toggle_visibility)
 
     sys.exit(app.exec())
 
