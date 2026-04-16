@@ -93,12 +93,13 @@ async def _main_async() -> None:
     db.prune_old_data(days=7)
     init_scheduler()
 
-    audio_service  = AudioCaptureService()
+    audio_service = AudioCaptureService()
     interrupt_engine = InterruptDecisionEngine()
 
     # ── Bridge ────────────────────────────────────────────────────────────
     try:
         from ui.bridge import get_bridge
+
         _bridge = get_bridge()
     except Exception:
         _bridge = None
@@ -137,12 +138,12 @@ async def _main_async() -> None:
         log.info(f"On-demand activation: {reason}")
         _emit("state_changed", "thinking")
         try:
-            context    = db.get_recent_context(config.CONTEXT_WINDOW_SECONDS)
-            ctx_str    = _build_context_summary(context)
+            context = db.get_recent_context(config.CONTEXT_WINDOW_SECONDS)
+            ctx_str = _build_context_summary(context)
             deep_world = _build_deep_world_context()
             memory_ctx = await _build_semantic_memory_context(ctx_str)
-            full_ctx   = "\n\n".join(filter(None, [deep_world, memory_ctx, ctx_str]))
-            result     = await _run_reasoning(full_ctx)
+            full_ctx = "\n\n".join(filter(None, [deep_world, memory_ctx, ctx_str]))
+            result = await _run_reasoning(full_ctx)
             if result:
                 await _handle_result(result, ctx_str, interrupt_engine)
         except Exception as e:
@@ -163,6 +164,7 @@ async def _main_async() -> None:
     # ── Patch speak() → bridge signals + toast ────────────────────────────
     try:
         import voice.speak as _speak_mod
+
         _orig_speak = _speak_mod.speak
 
         async def _patched_speak(text: str) -> None:
@@ -191,13 +193,14 @@ async def _main_async() -> None:
     # ── Periodic stats ────────────────────────────────────────────────────
     async def _stats_loop() -> None:
         import json
+
         while not _shutdown_event.is_set():
             try:
                 ctx = db.get_recent_context(3600)
                 stats = {
                     "screenshots": len(ctx.get("screenshots", [])),
-                    "speaks":      len(db.get_recent_actions(limit=200)),
-                    "actions":     sum(
+                    "speaks": len(db.get_recent_actions(limit=200)),
+                    "actions": sum(
                         1 for a in db.get_recent_actions(limit=200) if a.get("success")
                     ),
                 }
@@ -207,11 +210,20 @@ async def _main_async() -> None:
             await asyncio.sleep(30)
 
     # ── Log startup info ──────────────────────────────────────────────────
-    log.info(f"  Provider  : {config.LLM_PROVIDER}")
-    log.info(f"  Reasoning : {config.REASONING_MODEL if config.LLM_PROVIDER == 'anthropic' else config.OPENAI_REASONING_MODEL}")
+    try:
+        from brain.llm import get_client
+
+        _llm = get_client()
+        log.info(f"  Provider  : {_llm.provider} (configured={config.LLM_PROVIDER})")
+        log.info(f"  Reasoning : {_llm.model_for('reasoning')}")
+    except Exception:
+        log.info(f"  Provider  : {config.LLM_PROVIDER}")
+        log.info("  Reasoning : unknown")
     log.info(f"  Whisper   : {config.WHISPER_MODEL}")
     log.info(f"  Voice     : {'ElevenLabs' if config.VOICE_ENABLED else 'SAPI/off'}")
-    log.info(f"  Hotkey    : {config.ON_DEMAND_HOTKEY if config.HOTKEY_ENABLED else 'off'}")
+    log.info(
+        f"  Hotkey    : {config.ON_DEMAND_HOTKEY if config.HOTKEY_ENABLED else 'off'}"
+    )
     log.info("Backend running.")
 
     # ── Signals ───────────────────────────────────────────────────────────
@@ -237,6 +249,7 @@ async def _main_async() -> None:
     # ── Wiki: load on startup ─────────────────────────────────────────────
     try:
         from brain.wiki import get_wiki, wiki_update_loop
+
         get_wiki()  # loads from disk
     except Exception as e:
         log.warning(f"Wiki init failed: {e}")
@@ -244,6 +257,7 @@ async def _main_async() -> None:
     # ── AGI: init on startup ──────────────────────────────────────────────
     try:
         from brain.agi import get_agi, agi_loop
+
         get_agi()  # init singleton
     except Exception as e:
         log.warning(f"AGI init failed: {e}")
@@ -270,6 +284,7 @@ async def _main_async() -> None:
     # not trigger the FIRST_COMPLETED shutdown.
     try:
         from brain.startup import run_startup_sequence
+
         asyncio.create_task(run_startup_sequence(interrupt_engine))
     except Exception as e:
         log.warning(f"Startup sequence init failed: {e}")
@@ -363,8 +378,11 @@ def _build_tray(app, orb):
         menu.addAction("Quit", lambda: (_request_shutdown(), app.quit()))
         icon.setContextMenu(menu)
         icon.activated.connect(
-            lambda r: orb.dashboard_toggle.emit()
-            if r == QSystemTrayIcon.ActivationReason.Trigger else None
+            lambda r: (
+                orb.dashboard_toggle.emit()
+                if r == QSystemTrayIcon.ActivationReason.Trigger
+                else None
+            )
         )
         icon.setToolTip(f"{config.MARROW_NAME} — ambient intelligence")
         icon.show()
@@ -385,12 +403,14 @@ def _run_qt() -> None:
 
     # ── Orb (always-there presence) ───────────────────────────────────────
     from ui.orb import MarrowOrb
+
     orb = MarrowOrb()
     orb.connect_bridge()
     orb.show()
 
     # ── Dashboard (opens on orb click) ────────────────────────────────────
     from ui.dashboard import MarrowDashboard
+
     dashboard = MarrowDashboard()
 
     def _toggle_dashboard():
@@ -402,11 +422,12 @@ def _run_qt() -> None:
     orb.dashboard_toggle.connect(_toggle_dashboard)
 
     # ── Settings panel ────────────────────────────────────────────────────
-    settings_panel = [None]   # lazy singleton
+    settings_panel = [None]  # lazy singleton
 
     def _show_settings():
         try:
             from ui.settings_panel import MarrowSettingsPanel
+
             if settings_panel[0] is None:
                 settings_panel[0] = MarrowSettingsPanel()
             settings_panel[0].show()
@@ -427,11 +448,13 @@ def _run_qt() -> None:
     # ── Text task: connect from Qt main thread (required for signal safety) ──
     try:
         from ui.bridge import get_bridge as _get_bridge
+
         def _on_text_task_qt(text: str):
             if _asyncio_loop:
                 asyncio.run_coroutine_threadsafe(
                     _execute_user_task(text), _asyncio_loop
                 )
+
         _get_bridge().text_task_submitted.connect(_on_text_task_qt)
     except Exception as e:
         log.warning(f"Text task wire failed: {e}")
@@ -440,6 +463,7 @@ def _run_qt() -> None:
     try:
         from ui.bridge import get_bridge
         from ui.approval_dialog import show_approval_dialog
+
         get_bridge().approval_requested.connect(show_approval_dialog)
     except Exception as e:
         log.warning(f"Approval bridge wire failed: {e}")
@@ -496,6 +520,7 @@ def main() -> None:
 
     # Small delay to let the loop start and assign _asyncio_loop
     import time
+
     time.sleep(0.15)
 
     # Qt runs on the main thread (required on Windows)

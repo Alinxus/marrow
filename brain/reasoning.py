@@ -34,6 +34,7 @@ from brain.world_model import (
     get_world_context,
     update_world_from_screen,
 )
+from brain.context_awareness import build_high_signal_context
 from personality.marrow import REASONING_PROMPT, WORLD_MODEL_EXTRACTION_PROMPT
 from storage import db
 from voice.speak import speak, speak_filler
@@ -196,6 +197,7 @@ async def _run_reasoning(full_context: str) -> Optional[dict]:
     Returns parsed JSON or None.
     """
     from brain.llm import get_client
+
     llm = get_client()
 
     user_content = full_context
@@ -235,6 +237,7 @@ async def _extract_world_model(
     Uses scoring model (fast + cheap) since this runs every cycle.
     """
     from brain.llm import get_client
+
     llm = get_client()
 
     try:
@@ -250,10 +253,12 @@ async def _extract_world_model(
 
         # Extract observations via LLM
         response = await llm.create(
-            messages=[{
-                "role": "user",
-                "content": f"{WORLD_MODEL_EXTRACTION_PROMPT}\n\nContext:\n{context_str}",
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"{WORLD_MODEL_EXTRACTION_PROMPT}\n\nContext:\n{context_str}",
+                }
+            ],
             max_tokens=512,
             model_type="scoring",
         )
@@ -276,6 +281,7 @@ async def _extract_world_model(
             # Nudge wiki to pick up new observations on next cycle
             try:
                 from brain.wiki import get_wiki
+
                 get_wiki()._last_update = 0  # force refresh next cycle
             except Exception:
                 pass
@@ -302,6 +308,9 @@ Speak only when you have something genuinely useful:
 - They're about to miss something important (deadline, conflict, detail)
 - They said something out loud that needs a response or action
 - You spotted something they haven't noticed that changes what they should do
+- Outreach pressure warning: repeated outgoing messages to same person with little/no incoming response
+- Misinformation safety: high-confidence claim in media feed conflicts with known facts
+- Social/relationship safety: if a live call shows a strong presence-change signal, surface it briefly and clearly
 
 ## When to stay silent
 - Routine work — browsing, reading, normal flow
@@ -338,6 +347,8 @@ Nothing:
 - Be ruthless about saying nothing. Most moments don't need commentary.
 - Never narrate what they can already see.
 - Never be generic ("looks like you're working hard"). Be specific to exactly what's on screen.
+- Never reference internal labels like "signals", "models", "scores", or "heuristics" in user-facing output.
+- Use long-horizon context implicitly. Surface the insight, not the mechanism.
 - Shorter is better. One sharp sentence beats three hedged ones."""
 
 
@@ -367,8 +378,14 @@ async def reasoning_loop(
             # Semantic memory context (wiki + RetainDB search + recent obs)
             memory_context = await _build_semantic_memory_context(context_str)
 
+            high_signal_context = build_high_signal_context()
+
             # Assemble full context for reasoning
-            full_context = "\n\n".join(filter(None, [deep_world, memory_context, context_str]))
+            full_context = "\n\n".join(
+                filter(
+                    None, [deep_world, high_signal_context, memory_context, context_str]
+                )
+            )
 
             # Reasoning + world model extraction run in parallel
             result, _ = await asyncio.gather(
@@ -417,10 +434,19 @@ Return JSON only:
 veto=true means instant rejection regardless of scores."""
 
 _ANTI_PATTERNS = [
-    "take a break", "stay hydrated", "you got this", "great job",
-    "keep up the good work", "you're doing great", "don't forget to",
-    "it seems like you", "you might want to", "perhaps consider",
-    "it looks like you", "i notice that you", "i can see that",
+    "take a break",
+    "stay hydrated",
+    "you got this",
+    "great job",
+    "keep up the good work",
+    "you're doing great",
+    "don't forget to",
+    "it seems like you",
+    "you might want to",
+    "perhaps consider",
+    "it looks like you",
+    "i notice that you",
+    "i can see that",
 ]
 
 
@@ -439,6 +465,7 @@ async def _four_axis_score(message: str, reasoning: str, context: str) -> float:
 
     try:
         from brain.llm import get_client
+
         llm = get_client()
 
         prompt = _FOUR_AXIS_PROMPT.format(

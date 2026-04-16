@@ -120,6 +120,29 @@ def init_db() -> None:
             context    TEXT  -- what triggered this
         );
 
+        CREATE TABLE IF NOT EXISTS contact_interactions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          REAL NOT NULL,
+            contact     TEXT NOT NULL,
+            channel     TEXT NOT NULL,
+            direction   TEXT NOT NULL,  -- outgoing|incoming
+            action      TEXT NOT NULL,  -- sent|reply|draft|received
+            source_app  TEXT,
+            evidence    TEXT,
+            confidence  REAL DEFAULT 0.5
+        );
+
+        CREATE TABLE IF NOT EXISTS claim_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          REAL NOT NULL,
+            topic       TEXT NOT NULL,
+            claim       TEXT NOT NULL,
+            verdict     TEXT,
+            source_app  TEXT,
+            evidence    TEXT,
+            confidence  REAL DEFAULT 0.5
+        );
+
         -- FTS5 trigram indexes for fast search
         CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(
             content, type, source,
@@ -150,6 +173,9 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_reminders_trigger ON reminders(trigger_ts);
         CREATE INDEX IF NOT EXISTS idx_actions_ts        ON actions(ts);
         CREATE INDEX IF NOT EXISTS idx_conversations_ts  ON conversations(ts);
+        CREATE INDEX IF NOT EXISTS idx_contact_ts        ON contact_interactions(ts);
+        CREATE INDEX IF NOT EXISTS idx_contact_name      ON contact_interactions(contact);
+        CREATE INDEX IF NOT EXISTS idx_claim_ts          ON claim_events(ts);
     """)
     conn.commit()
 
@@ -541,3 +567,130 @@ def search_all(query: str, limit: int = 10) -> dict:
         pass
 
     return results
+
+
+# ─── High-context awareness tables ─────────────────────────────────────────────
+
+
+def insert_contact_interaction(
+    ts: float,
+    contact: str,
+    channel: str,
+    direction: str,
+    action: str,
+    source_app: str = "",
+    evidence: str = "",
+    confidence: float = 0.5,
+) -> bool:
+    """Insert deduped contact interaction. Returns True if inserted."""
+    conn = _connect()
+
+    recent = conn.execute(
+        """SELECT id FROM contact_interactions
+           WHERE contact = ? AND channel = ? AND action = ? AND ts > ?
+           ORDER BY ts DESC LIMIT 1""",
+        (contact.lower(), channel, action, ts - 120),
+    ).fetchone()
+    if recent:
+        return False
+
+    conn.execute(
+        """INSERT INTO contact_interactions
+           (ts, contact, channel, direction, action, source_app, evidence, confidence)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            ts,
+            contact.lower(),
+            channel,
+            direction,
+            action,
+            source_app,
+            evidence,
+            confidence,
+        ),
+    )
+    conn.commit()
+    return True
+
+
+def get_contact_pressure_signals(window_days: int = 14, limit: int = 10) -> list:
+    """
+    Contacts with high outgoing-to-incoming ratio.
+    Useful for: "you've emailed them 3 times with no response" style prompts.
+    """
+    conn = _connect()
+    cutoff = (datetime.utcnow() - timedelta(days=window_days)).timestamp()
+    rows = conn.execute(
+        """SELECT
+               contact,
+               SUM(CASE WHEN direction = 'outgoing' THEN 1 ELSE 0 END) AS outgoing,
+               SUM(CASE WHEN direction = 'incoming' THEN 1 ELSE 0 END) AS incoming,
+               MAX(ts) AS last_ts
+           FROM contact_interactions
+           WHERE ts > ?
+           GROUP BY contact
+           HAVING outgoing >= 2
+           ORDER BY (outgoing - incoming) DESC, last_ts DESC
+           LIMIT ?""",
+        (cutoff, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_contact_interactions(limit: int = 25) -> list:
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM contact_interactions ORDER BY ts DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def insert_claim_event(
+    ts: float,
+    topic: str,
+    claim: str,
+    verdict: str = "",
+    source_app: str = "",
+    evidence: str = "",
+    confidence: float = 0.5,
+) -> bool:
+    """Insert deduped claim event. Returns True if inserted."""
+    conn = _connect()
+    recent = conn.execute(
+        """SELECT id FROM claim_events
+           WHERE ts > ? AND topic = ? AND claim = ?
+           ORDER BY ts DESC LIMIT 1""",
+        (ts - 600, topic.lower(), claim[:500]),
+    ).fetchone()
+    if recent:
+        return False
+
+    conn.execute(
+        """INSERT INTO claim_events
+           (ts, topic, claim, verdict, source_app, evidence, confidence)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            ts,
+            topic.lower(),
+            claim[:500],
+            verdict,
+            source_app,
+            evidence[:600],
+            confidence,
+        ),
+    )
+    conn.commit()
+    return True
+
+
+def get_recent_claim_events(window_hours: int = 24, limit: int = 20) -> list:
+    conn = _connect()
+    cutoff = (datetime.utcnow() - timedelta(hours=window_hours)).timestamp()
+    rows = conn.execute(
+        """SELECT * FROM claim_events
+           WHERE ts > ?
+           ORDER BY ts DESC LIMIT ?""",
+        (cutoff, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]

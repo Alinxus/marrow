@@ -4,8 +4,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── LLM Provider ─────────────────────────────────────────────────────────────
-# Set LLM_PROVIDER to: "anthropic" | "openai" | "ollama"
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
+# Set LLM_PROVIDER to: "auto" | "anthropic" | "openai" | "ollama" | "none"
+# auto = prefer configured cloud key, otherwise local Ollama, otherwise no-LLM mode
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "auto")
 
 # Anthropic (optional - used if LLM_PROVIDER=anthropic and key provided)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -38,6 +39,7 @@ INTERRUPT_COOLDOWN = int(os.environ.get("INTERRUPT_COOLDOWN", "90"))
 SCREENSHOT_INTERVAL = int(os.environ.get("SCREENSHOT_INTERVAL", "4"))
 CONTEXT_WINDOW_SECONDS = int(os.environ.get("CONTEXT_WINDOW_SECONDS", "300"))
 AUDIO_CHUNK_SECONDS = int(os.environ.get("AUDIO_CHUNK_SECONDS", "5"))
+AUDIO_INPUT_DEVICE = os.environ.get("AUDIO_INPUT_DEVICE", "")
 
 # Audio — "small" is the minimum for decent accuracy; "medium" is better but slower
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
@@ -84,6 +86,8 @@ MEETING_APPS = [
 
 # Screenshot storage
 SCREENSHOT_SAVE_TO_DISK = os.environ.get("SCREENSHOT_SAVE_TO_DISK", "1") == "1"
+SCREEN_VISION_MAX_SIZE = int(os.environ.get("SCREEN_VISION_MAX_SIZE", "1920"))
+SCREEN_VISION_JPEG_QUALITY = int(os.environ.get("SCREEN_VISION_JPEG_QUALITY", "85"))
 
 # System tray
 TRAY_ENABLED = os.environ.get("TRAY_ENABLED", "1") == "1"

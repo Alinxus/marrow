@@ -80,6 +80,27 @@ def _check_wake_word(text: str) -> bool:
     return False
 
 
+def _select_input_device():
+    """Resolve input device from config or first valid input device."""
+    configured = (config.AUDIO_INPUT_DEVICE or "").strip()
+    if configured:
+        try:
+            if configured.isdigit():
+                return int(configured)
+            return configured
+        except Exception:
+            pass
+
+    try:
+        devices = sd.query_devices()
+        for idx, dev in enumerate(devices):
+            if int(dev.get("max_input_channels", 0)) > 0:
+                return idx
+    except Exception:
+        return None
+    return None
+
+
 # Callback for wake word activation
 _wake_word_callback = None
 
@@ -92,6 +113,15 @@ def set_wake_word_callback(callback):
 
 class AudioCaptureService:
     def __init__(self):
+        if not config.AUDIO_ENABLED:
+            self._deepgram_key = ""
+            self._model = None
+            self._audio_queue: queue.Queue = queue.Queue()
+            self._running = False
+            self._loop = None
+            log.info("Audio service initialized in disabled mode")
+            return
+
         self._deepgram_key = config.DEEPGRAM_API_KEY
 
         if self._deepgram_key:
@@ -156,6 +186,7 @@ class AudioCaptureService:
                 log.warning("No audio input device found — audio capture disabled")
                 try:
                     from ui.bridge import get_bridge
+
                     get_bridge().mic_active.emit(False)
                 except Exception:
                     pass
@@ -164,6 +195,7 @@ class AudioCaptureService:
             log.warning(f"Audio device query failed: {e} — audio capture disabled")
             try:
                 from ui.bridge import get_bridge
+
                 get_bridge().mic_active.emit(False)
             except Exception:
                 pass
@@ -176,16 +208,22 @@ class AudioCaptureService:
         # Signal UI that mic is active
         try:
             from ui.bridge import get_bridge
+
             get_bridge().mic_active.emit(True)
         except Exception:
             pass
 
+        selected_device = _select_input_device()
+        log.info(
+            f"Audio input device: {selected_device if selected_device is not None else 'default'}"
+        )
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="float32",
             callback=self._record_callback,
             blocksize=1024,
+            device=selected_device,
         ):
             while self._running:
                 try:
@@ -222,19 +260,19 @@ class AudioCaptureService:
             return
         ts = time.time()
         from storage import db as _db
+
         _db.insert_transcript(ts, text)
         log.info(f"Heard: {text[:100]}")
 
         try:
             from ui.bridge import get_bridge
+
             get_bridge().transcript_heard.emit(text[:120])
         except Exception:
             pass
 
         if _check_wake_word(text) and _wake_word_callback and self._loop:
-            asyncio.run_coroutine_threadsafe(
-                _wake_word_callback(text), self._loop
-            )
+            asyncio.run_coroutine_threadsafe(_wake_word_callback(text), self._loop)
 
     async def _run_deepgram(self) -> None:
         """
@@ -242,7 +280,12 @@ class AudioCaptureService:
         Sends raw mic audio as 16kHz mono PCM, receives transcripts live.
         """
         try:
-            from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions, Microphone
+            from deepgram import (
+                DeepgramClient,
+                LiveTranscriptionEvents,
+                LiveOptions,
+                Microphone,
+            )
         except ImportError:
             log.warning("deepgram-sdk not installed — falling back to Whisper")
             await self._loop.run_in_executor(None, self._record_loop)
@@ -250,6 +293,7 @@ class AudioCaptureService:
 
         try:
             from ui.bridge import get_bridge
+
             get_bridge().mic_active.emit(True)
         except Exception:
             pass
@@ -307,14 +351,29 @@ class AudioCaptureService:
         self._loop = loop
 
     async def run(self) -> None:
+        if not config.AUDIO_ENABLED:
+            log.info("Audio service disabled (AUDIO_ENABLED=0)")
+            return
+
         self._running = True
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
 
-        if self._deepgram_key:
-            await self._run_deepgram()
-        else:
-            await self._loop.run_in_executor(None, self._record_loop)
+        try:
+            if self._deepgram_key:
+                await self._run_deepgram()
+            else:
+                await self._loop.run_in_executor(None, self._record_loop)
+        except Exception as e:
+            msg = str(e)
+            if "Error querying device -1" in msg or "Invalid device" in msg:
+                log.error(
+                    "No valid microphone input device detected. Audio capture paused."
+                )
+                while self._running:
+                    await asyncio.sleep(60)
+                return
+            raise
 
     def stop(self) -> None:
         self._running = False

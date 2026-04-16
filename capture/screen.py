@@ -77,15 +77,24 @@ def _get_active_window() -> tuple[str, str, str]:
         return "unknown", "unknown", ""
 
 
-def _screenshot_to_b64(img: Image.Image, max_size: int = 1280) -> tuple[str, str]:
+def _screenshot_to_b64(
+    img: Image.Image,
+    max_size: int = None,
+    jpeg_quality: int = None,
+) -> tuple[str, str]:
     """Resize + compress to base64 JPEG. Returns (b64, content_hash)."""
+    if max_size is None:
+        max_size = config.SCREEN_VISION_MAX_SIZE
+    if jpeg_quality is None:
+        jpeg_quality = config.SCREEN_VISION_JPEG_QUALITY
+
     ratio = min(max_size / img.width, max_size / img.height, 1.0)
     if ratio < 1.0:
         img = img.resize(
             (int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS
         )
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="JPEG", quality=75)
+    img.convert("RGB").save(buf, format="JPEG", quality=jpeg_quality)
     raw = buf.getvalue()
     b64 = base64.b64encode(raw).decode()
     content_hash = hashlib.md5(raw).hexdigest()
@@ -120,7 +129,26 @@ _VISION_PROMPT = (
 )
 
 
-async def _extract_text_with_vision(b64_image: str) -> str:
+def _local_visual_summary(
+    app_name: str, window_title: str, focused_context: str
+) -> str:
+    """No-LLM fallback summary so capture still produces usable context."""
+    parts = [
+        f"App: {app_name or 'unknown'}",
+        f"Window: {window_title or 'unknown'}",
+    ]
+    if focused_context:
+        parts.append(f"Focus: {focused_context[:240]}")
+    parts.append("Vision model unavailable; using local window metadata only.")
+    return "\n".join(parts)
+
+
+async def _extract_text_with_vision(
+    b64_image: str,
+    app_name: str = "",
+    window_title: str = "",
+    focused_context: str = "",
+) -> str:
     """
     Semantic screen OCR via the vision-capable model.
     Falls back gracefully if vision unavailable.
@@ -129,6 +157,9 @@ async def _extract_text_with_vision(b64_image: str) -> str:
         from brain.llm import get_client
 
         llm = get_client()
+
+        if llm.provider == "none":
+            return _local_visual_summary(app_name, window_title, focused_context)
 
         if llm.provider == "anthropic":
             client = llm.get_raw_anthropic()
@@ -170,14 +201,17 @@ async def _extract_text_with_vision(b64_image: str) -> str:
                         ],
                     }
                 ],
-                model_type="scoring",
+                model_type="vision",
                 max_completion_tokens=700,
             )
-            return resp.text.strip()
+            text = resp.text.strip()
+            return text or _local_visual_summary(
+                app_name, window_title, focused_context
+            )
 
     except Exception as e:
         log.warning(f"Vision extraction failed: {e}")
-    return ""
+    return _local_visual_summary(app_name, window_title, focused_context)
 
 
 async def screen_capture_loop() -> None:
@@ -223,7 +257,12 @@ async def screen_capture_loop() -> None:
                     pass
 
                 image_path = _save_screenshot(img, ts)
-                ocr_text = await _extract_text_with_vision(b64)
+                ocr_text = await _extract_text_with_vision(
+                    b64,
+                    app_name=app_name,
+                    window_title=window_title,
+                    focused_context=focused_context,
+                )
 
                 db.insert_screenshot(
                     ts=ts,
@@ -234,6 +273,21 @@ async def screen_capture_loop() -> None:
                     image_path=image_path,
                     content_hash=content_hash,
                 )
+
+                # High-signal context extraction (contact pressure + claim events)
+                try:
+                    from brain.context_awareness import process_screen_signals
+
+                    process_screen_signals(
+                        ts,
+                        app_name,
+                        window_title,
+                        ocr_text,
+                        focused_context=focused_context,
+                    )
+                except Exception as e:
+                    log.debug(f"Signal extraction skipped: {e}")
+
                 log.debug(f"Screen captured: [{app_name}] {window_title[:60]}")
 
             except Exception as e:

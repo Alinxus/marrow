@@ -16,6 +16,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+import httpx
+
 import config
 
 log = logging.getLogger(__name__)
@@ -102,6 +104,29 @@ def _messages_to_openai(messages: list[dict]) -> list[dict]:
             result.append({"role": role, "content": str(content)})
             continue
 
+        # ── User multimodal content passthrough (text + image_url blocks) ──
+        if role == "user" and all(isinstance(b, dict) and "type" in b for b in content):
+            has_media = any(
+                b.get("type") in ("image_url", "input_image") for b in content
+            )
+            if has_media:
+                normalized_blocks = []
+                for b in content:
+                    btype = b.get("type")
+                    if btype in ("text", "input_text"):
+                        normalized_blocks.append(
+                            {"type": "text", "text": b.get("text", "")}
+                        )
+                    elif btype in ("image_url", "input_image"):
+                        normalized_blocks.append(
+                            {
+                                "type": "image_url",
+                                "image_url": b.get("image_url", {}),
+                            }
+                        )
+                result.append({"role": "user", "content": normalized_blocks})
+                continue
+
         # ── Tool result messages → OpenAI "tool" role ──────────────────────
         if any(
             (isinstance(b, dict) and b.get("type") == "tool_result") for b in content
@@ -175,19 +200,49 @@ class LLMClient:
     """
 
     def __init__(self, provider: str = None):
-        self.provider = provider or config.LLM_PROVIDER
+        requested = (provider or config.LLM_PROVIDER or "auto").lower().strip()
+        self.provider = self._resolve_provider(requested)
         self._anthropic = None
         self._openai = None
-        self._validate_provider()
+        log.info(f"LLM provider resolved: requested={requested} active={self.provider}")
 
-    def _validate_provider(self):
-        """Validate that the configured provider has required credentials."""
-        if self.provider == "anthropic" and not config.ANTHROPIC_API_KEY:
-            raise ValueError("ANTHROPIC_API_KEY required for anthropic provider")
-        if self.provider == "openai" and not config.OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY required for openai provider")
-        if self.provider == "ollama":
-            pass  # No API key needed
+    def _ollama_available(self) -> bool:
+        try:
+            r = httpx.get(f"{config.OLLAMA_BASE_URL}/api/tags", timeout=1.2)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def _resolve_provider(self, requested: str) -> str:
+        """Resolve provider safely. Never raises on missing keys."""
+        if requested == "none":
+            return "none"
+
+        if requested == "anthropic":
+            if config.ANTHROPIC_API_KEY:
+                return "anthropic"
+            log.warning("ANTHROPIC_API_KEY missing; falling back")
+
+        if requested == "openai":
+            if config.OPENAI_API_KEY:
+                return "openai"
+            log.warning("OPENAI_API_KEY missing; falling back")
+
+        if requested == "ollama":
+            if self._ollama_available():
+                return "ollama"
+            log.warning("Ollama unavailable; falling back")
+
+        # auto / fallback chain
+        if config.OPENAI_API_KEY:
+            return "openai"
+        if config.ANTHROPIC_API_KEY:
+            return "anthropic"
+        if self._ollama_available():
+            return "ollama"
+
+        log.warning("No LLM backend available. Running in no-LLM mode.")
+        return "none"
 
     # ── Lazy backends ──────────────────────────────────────────────────────
 
@@ -217,30 +272,40 @@ class LLMClient:
         """Return the correct model name string for this provider + type."""
         p = self.provider
         if p == "anthropic":
+            if model_type == "vision":
+                return config.VISION_MODEL
             return (
                 config.REASONING_MODEL
                 if model_type == "reasoning"
                 else config.SCORING_MODEL
             )
         elif p == "openai":
+            if model_type == "vision":
+                return config.OPENAI_VISION_MODEL
             return (
                 config.OPENAI_REASONING_MODEL
                 if model_type == "reasoning"
                 else config.OPENAI_SCORING_MODEL
             )
         elif p == "ollama":
+            if model_type == "vision":
+                return config.OLLAMA_VISION_MODEL
             return (
                 config.OLLAMA_REASONING_MODEL
                 if model_type == "reasoning"
                 else config.OLLAMA_SCORING_MODEL
             )
+        elif p == "none":
+            return "none"
         return config.REASONING_MODEL
 
     def supports_streaming(self) -> bool:
-        return self.provider == "anthropic"
+        return self.provider == "anthropic" and bool(config.ANTHROPIC_API_KEY)
 
     def get_raw_anthropic(self):
         """Return the raw Anthropic async client (for streaming TTS path)."""
+        if self.provider != "anthropic":
+            return None
         return self._get_anthropic()
 
     # ── Single-turn create ─────────────────────────────────────────────────
@@ -256,6 +321,11 @@ class LLMClient:
         max_completion_tokens: int = None,
     ) -> LLMResponse:
         """Single LLM call — returns normalized LLMResponse."""
+        if self.provider == "none":
+            return LLMResponse(
+                content=[TextBlock(text="")], stop_reason="end_turn", model="none"
+            )
+
         model = model or self.model_for(model_type)
         if self.provider == "anthropic":
             return await self._anthropic_create(
@@ -316,7 +386,9 @@ class LLMClient:
 
         kwargs: dict = dict(
             model=model,
-            max_completion_tokens=max_completion_tokens if max_completion_tokens else max_tokens,
+            max_completion_tokens=max_completion_tokens
+            if max_completion_tokens
+            else max_tokens,
             messages=oai_messages,
         )
         if tools:
