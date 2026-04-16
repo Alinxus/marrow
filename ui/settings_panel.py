@@ -17,6 +17,7 @@ import os
 import subprocess
 import json
 import urllib.request
+import sys
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QRectF
@@ -494,18 +495,44 @@ class MarrowSettingsPanel(QWidget):
         ]
         ENV_FILE.write_text("".join(lines), encoding="utf-8")
 
+        # Apply immediately to current process env so running backend picks it up.
+        for k, v in vals.items():
+            os.environ[str(k)] = "" if v is None else str(v)
+
         # Hot-reload config
         try:
             from dotenv import load_dotenv
 
             load_dotenv(str(ENV_FILE), override=True)
-            import importlib, config as cfg
+            import importlib
 
+            if "config" in sys.modules:
+                cfg = importlib.reload(sys.modules["config"])
+            else:
+                import config as cfg
+
+            # Also refresh module locals that may hold stale refs
             importlib.reload(cfg)
             from brain.llm import reset_client
 
             reset_client()
-            log.info("Settings saved and applied.")
+            log.info(
+                "Settings saved and applied. provider=%s oai=%s ollama=%s",
+                cfg.LLM_PROVIDER,
+                cfg.OPENAI_REASONING_MODEL,
+                cfg.OLLAMA_REASONING_MODEL,
+            )
+
+            try:
+                from ui.bridge import get_bridge
+
+                get_bridge().toast_requested.emit(
+                    "Marrow",
+                    f"Applied settings: {cfg.LLM_PROVIDER} ({cfg.OPENAI_REASONING_MODEL if cfg.LLM_PROVIDER == 'openai' else cfg.OLLAMA_REASONING_MODEL if cfg.LLM_PROVIDER == 'ollama' else cfg.REASONING_MODEL})",
+                    4,
+                )
+            except Exception:
+                pass
         except Exception as e:
             log.warning(f"Hot-reload failed: {e}")
 

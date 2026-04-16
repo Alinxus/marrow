@@ -18,7 +18,9 @@ UI architecture:
 
 import asyncio
 import logging
+import os
 import signal
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -63,6 +65,154 @@ def _setup_logging() -> None:
 
 
 log = logging.getLogger("marrow")
+
+
+def _detect_ollama_models() -> list[str]:
+    env = os.environ.copy()
+    env["PATH"] = env.get("PATH", "") + ":/opt/homebrew/bin:/usr/local/bin"
+    for exe in ("ollama", "/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"):
+        try:
+            p = subprocess.run(
+                [exe, "list"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                env=env,
+            )
+            if p.returncode != 0:
+                continue
+            out = []
+            for line in (p.stdout or "").splitlines():
+                s = line.strip()
+                if not s or s.lower().startswith("name"):
+                    continue
+                name = s.split()[0].strip()
+                if name and name not in out:
+                    out.append(name)
+            if out:
+                return out
+        except Exception:
+            pass
+    return []
+
+
+def _apply_settings_updates(updates: dict[str, str]) -> str:
+    """Persist settings to env file + apply to running process."""
+    from dotenv import dotenv_values
+    import importlib
+
+    env_path = Path(getattr(config, "ENV_FILE", Path.home() / ".marrow" / ".env"))
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = dict(dotenv_values(env_path)) if env_path.exists() else {}
+
+    for k, v in updates.items():
+        existing[k] = str(v)
+        os.environ[k] = str(v)
+
+    lines = [f'{k}="{str(v).replace('"', '\\"')}"\n' for k, v in existing.items()]
+    env_path.write_text("".join(lines), encoding="utf-8")
+
+    # Hot apply runtime config + llm client
+    if "config" in sys.modules:
+        importlib.reload(sys.modules["config"])
+    from brain.llm import reset_client
+
+    reset_client()
+    return f"Updated settings: {', '.join(updates.keys())}"
+
+
+def _handle_slash_command(text: str) -> str | None:
+    """Handle lightweight slash commands from chat.
+
+    Returns response string if handled, otherwise None.
+    """
+    t = (text or "").strip()
+    if not t.startswith("/"):
+        return None
+
+    parts = t.split()
+    cmd = parts[0].lower()
+    args = parts[1:]
+
+    if cmd in ("/help", "/commands"):
+        return (
+            "Slash commands:\n"
+            "- /models\n"
+            "- /provider <auto|openai|anthropic|ollama|none>\n"
+            "- /model <reasoning|scoring|vision> <model_name>\n"
+            "- /audio <on|off>\n"
+            "- /hotkey <on|off>\n"
+            "- /wakeword <on|off>"
+        )
+
+    if cmd == "/models":
+        llm_provider = os.environ.get("LLM_PROVIDER", config.LLM_PROVIDER)
+        lines = [
+            f"Provider: {llm_provider}",
+            f"Anthropic: reasoning={os.environ.get('REASONING_MODEL', config.REASONING_MODEL)}, scoring={os.environ.get('SCORING_MODEL', config.SCORING_MODEL)}, vision={os.environ.get('VISION_MODEL', config.VISION_MODEL)}",
+            f"OpenAI: reasoning={os.environ.get('OPENAI_REASONING_MODEL', config.OPENAI_REASONING_MODEL)}, scoring={os.environ.get('OPENAI_SCORING_MODEL', config.OPENAI_SCORING_MODEL)}, vision={os.environ.get('OPENAI_VISION_MODEL', config.OPENAI_VISION_MODEL)}",
+            f"Ollama: base={os.environ.get('OLLAMA_BASE_URL', config.OLLAMA_BASE_URL)}, reasoning={os.environ.get('OLLAMA_REASONING_MODEL', config.OLLAMA_REASONING_MODEL)}, scoring={os.environ.get('OLLAMA_SCORING_MODEL', config.OLLAMA_SCORING_MODEL)}, vision={os.environ.get('OLLAMA_VISION_MODEL', config.OLLAMA_VISION_MODEL)}",
+        ]
+        ollama_models = _detect_ollama_models()
+        if ollama_models:
+            lines.append("Installed Ollama models: " + ", ".join(ollama_models[:12]))
+        else:
+            lines.append("Installed Ollama models: none detected (is ollama running?)")
+        return "\n".join(lines)
+
+    if cmd == "/provider":
+        if not args:
+            return "Usage: /provider <auto|openai|anthropic|ollama|none>"
+        provider = args[0].lower()
+        if provider not in ("auto", "openai", "anthropic", "ollama", "none"):
+            return "Invalid provider. Use: auto|openai|anthropic|ollama|none"
+        return _apply_settings_updates({"LLM_PROVIDER": provider})
+
+    if cmd == "/model":
+        if len(args) < 2:
+            return "Usage: /model <reasoning|scoring|vision> <model_name>"
+        kind = args[0].lower()
+        name = " ".join(args[1:]).strip()
+        if kind not in ("reasoning", "scoring", "vision"):
+            return "First arg must be reasoning|scoring|vision"
+        provider = os.environ.get("LLM_PROVIDER", config.LLM_PROVIDER).lower()
+        updates = {}
+        if provider == "openai":
+            key = {
+                "reasoning": "OPENAI_REASONING_MODEL",
+                "scoring": "OPENAI_SCORING_MODEL",
+                "vision": "OPENAI_VISION_MODEL",
+            }[kind]
+            updates[key] = name
+        elif provider == "ollama":
+            key = {
+                "reasoning": "OLLAMA_REASONING_MODEL",
+                "scoring": "OLLAMA_SCORING_MODEL",
+                "vision": "OLLAMA_VISION_MODEL",
+            }[kind]
+            updates[key] = name
+        else:
+            key = {
+                "reasoning": "REASONING_MODEL",
+                "scoring": "SCORING_MODEL",
+                "vision": "VISION_MODEL",
+            }[kind]
+            updates[key] = name
+        return _apply_settings_updates(updates)
+
+    if cmd in ("/audio", "/hotkey", "/wakeword"):
+        if not args or args[0].lower() not in ("on", "off"):
+            return f"Usage: {cmd} <on|off>"
+        val = "1" if args[0].lower() == "on" else "0"
+        key = {
+            "/audio": "AUDIO_ENABLED",
+            "/hotkey": "HOTKEY_ENABLED",
+            "/wakeword": "WAKE_WORD_ENABLED",
+        }[cmd]
+        return _apply_settings_updates({key: val})
+
+    return f"Unknown command: {cmd}. Try /help"
+
 
 # ─── Global asyncio loop reference ────────────────────────────────────────────
 
@@ -334,6 +484,12 @@ async def _execute_user_task(text: str) -> None:
     bridge = get_bridge()
     bridge.state_changed.emit("acting")
     try:
+        slash_result = _handle_slash_command(text)
+        if slash_result is not None:
+            bridge.task_response.emit(slash_result)
+            bridge.toast_requested.emit(config.MARROW_NAME, slash_result[:200], 4)
+            return
+
         result = await execute_action(text)
         out = (result or "Done.").strip()
         bridge.task_response.emit(out)

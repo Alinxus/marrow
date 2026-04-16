@@ -398,13 +398,22 @@ class MarrowControlBar(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and event.pos().y() <= 52:
+            child = self.childAt(event.pos())
+            if isinstance(child, (QPushButton, QLineEdit, QScrollArea)):
+                self._drag_pos = None
+                return super().mousePressEvent(event)
             self._drag_pos = (
                 event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             )
+            return
+        return super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
+            return
+        return super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, _):
+    def mouseReleaseEvent(self, event):
         self._drag_pos = None
+        return super().mouseReleaseEvent(event)
