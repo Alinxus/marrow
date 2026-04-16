@@ -1,7 +1,18 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Canonical env file used by Settings panel + runtime.
+# Override with MARROW_ENV_FILE if needed.
+ENV_FILE = Path(
+    os.environ.get("MARROW_ENV_FILE", str(Path.home() / ".marrow" / ".env"))
+)
+
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE, override=True)
+else:
+    # Fallback for dev/local runs where only project .env exists.
+    load_dotenv(override=True)
 
 TOKEN_SAVER_MODE = os.environ.get("TOKEN_SAVER_MODE", "0") == "1"
 
@@ -12,9 +23,9 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "auto")
 
 # Anthropic (optional - used if LLM_PROVIDER=anthropic and key provided)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-REASONING_MODEL = "claude-sonnet-4-6"
-SCORING_MODEL = "claude-haiku-4-5-20251001"
-VISION_MODEL = "claude-haiku-4-5-20251001"
+REASONING_MODEL = os.environ.get("REASONING_MODEL", "claude-sonnet-4-6")
+SCORING_MODEL = os.environ.get("SCORING_MODEL", "claude-haiku-4-5-20251001")
+VISION_MODEL = os.environ.get("VISION_MODEL", "claude-haiku-4-5-20251001")
 
 # OpenAI (optional - used if LLM_PROVIDER=openai and key provided)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")

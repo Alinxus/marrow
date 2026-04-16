@@ -14,23 +14,39 @@ The LLM client is reset so the next call picks up new settings.
 
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QRectF
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy,
-    QTabWidget, QVBoxLayout, QWidget,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 log = logging.getLogger(__name__)
 
-BG      = QColor(14, 14, 18, 250)
-BORDER  = QColor(255, 255, 255, 20)
-W       = 420
+BG = QColor(14, 14, 18, 250)
+BORDER = QColor(255, 255, 255, 20)
+W = 420
 
-ENV_FILE = Path.home() / ".marrow" / ".env"
+try:
+    import config as _cfg
+
+    ENV_FILE = Path(getattr(_cfg, "ENV_FILE", Path.home() / ".marrow" / ".env"))
+except Exception:
+    ENV_FILE = Path.home() / ".marrow" / ".env"
 
 
 def _section(title: str) -> QLabel:
@@ -82,6 +98,14 @@ def _combo(options: list[str]) -> QComboBox:
             selection-background-color: rgba(96,165,250,120);
         }
     """)
+    return c
+
+
+def _editable_combo(default: str = "") -> QComboBox:
+    c = _combo([])
+    c.setEditable(True)
+    if default:
+        c.setCurrentText(default)
     return c
 
 
@@ -181,7 +205,7 @@ class MarrowSettingsPanel(QWidget):
         lay.setSpacing(6)
 
         lay.addWidget(_section("PROVIDER"))
-        self._provider = _combo(["anthropic", "openai", "ollama"])
+        self._provider = _combo(["auto", "anthropic", "openai", "ollama", "none"])
         lay.addWidget(self._provider)
 
         lay.addWidget(_section("ANTHROPIC"))
@@ -190,9 +214,13 @@ class MarrowSettingsPanel(QWidget):
         self._ant_key = _field("sk-ant-…", password=True)
         self._ant_reasoning = _field("claude-sonnet-4-6")
         self._ant_scoring = _field("claude-haiku-4-5-20251001")
-        for lbl, w2 in [("API Key", self._ant_key),
-                        ("Reasoning model", self._ant_reasoning),
-                        ("Scoring model", self._ant_scoring)]:
+        self._ant_vision = _field("claude-haiku-4-5-20251001")
+        for lbl, w2 in [
+            ("API Key", self._ant_key),
+            ("Reasoning model", self._ant_reasoning),
+            ("Scoring model", self._ant_scoring),
+            ("Vision model", self._ant_vision),
+        ]:
             ql = QLabel(lbl)
             ql.setStyleSheet(FORM_LABEL_STYLE)
             form1.addRow(ql, w2)
@@ -204,9 +232,13 @@ class MarrowSettingsPanel(QWidget):
         self._oai_key = _field("sk-…", password=True)
         self._oai_reasoning = _field("gpt-4o")
         self._oai_scoring = _field("gpt-4o-mini")
-        for lbl, w3 in [("API Key", self._oai_key),
-                        ("Reasoning model", self._oai_reasoning),
-                        ("Scoring model", self._oai_scoring)]:
+        self._oai_vision = _field("gpt-4o-mini")
+        for lbl, w3 in [
+            ("API Key", self._oai_key),
+            ("Reasoning model", self._oai_reasoning),
+            ("Scoring model", self._oai_scoring),
+            ("Vision model", self._oai_vision),
+        ]:
             ql = QLabel(lbl)
             ql.setStyleSheet(FORM_LABEL_STYLE)
             form2.addRow(ql, w3)
@@ -216,15 +248,34 @@ class MarrowSettingsPanel(QWidget):
         form3 = QFormLayout()
         form3.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self._ollama_url = _field("http://localhost:11434")
-        self._ollama_reasoning = _field("llama3.2")
-        self._ollama_scoring = _field("llama3.2")
-        for lbl, w4 in [("Base URL", self._ollama_url),
-                        ("Reasoning model", self._ollama_reasoning),
-                        ("Scoring model", self._ollama_scoring)]:
+        self._ollama_reasoning = _editable_combo("llama3.2")
+        self._ollama_scoring = _editable_combo("llama3.2")
+        self._ollama_vision = _editable_combo("llava")
+        for lbl, w4 in [
+            ("Base URL", self._ollama_url),
+            ("Reasoning model", self._ollama_reasoning),
+            ("Scoring model", self._ollama_scoring),
+            ("Vision model", self._ollama_vision),
+        ]:
             ql = QLabel(lbl)
             ql.setStyleSheet(FORM_LABEL_STYLE)
             form3.addRow(ql, w4)
         lay.addLayout(form3)
+
+        detect_btn = QPushButton("Detect installed Ollama models")
+        detect_btn.setFixedHeight(30)
+        detect_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,12);
+                color: rgba(220,220,230,240);
+                border: 1px solid rgba(255,255,255,22);
+                border-radius: 8px;
+                font-size: 10px;
+            }
+            QPushButton:hover { background: rgba(255,255,255,20); }
+        """)
+        detect_btn.clicked.connect(self._populate_ollama_models)
+        lay.addWidget(detect_btn)
 
         lay.addStretch()
         return w
@@ -250,17 +301,22 @@ class MarrowSettingsPanel(QWidget):
             ("Screenshot interval (s)", self._screenshot_interval),
             ("Context window (s)", self._context_window),
         ]:
-            ql = QLabel(lbl); ql.setStyleSheet(FORM_LABEL_STYLE)
+            ql = QLabel(lbl)
+            ql.setStyleSheet(FORM_LABEL_STYLE)
             form.addRow(ql, ww)
         lay.addLayout(form)
 
         lay.addWidget(_section("FEATURES"))
         self._hotkey_enabled = QCheckBox("Hotkey activation (Ctrl+Shift+M)")
-        self._wake_word_enabled = QCheckBox("Wake word (\"Marrow\")")
+        self._wake_word_enabled = QCheckBox('Wake word ("Marrow")')
         self._screenshot_save = QCheckBox("Save screenshots to disk")
         self._tray_enabled = QCheckBox("Show system tray icon")
-        for cb in (self._hotkey_enabled, self._wake_word_enabled,
-                   self._screenshot_save, self._tray_enabled):
+        for cb in (
+            self._hotkey_enabled,
+            self._wake_word_enabled,
+            self._screenshot_save,
+            self._tray_enabled,
+        ):
             cb.setStyleSheet("color: rgba(200,200,210,220); font-size: 10px;")
             lay.addWidget(cb)
 
@@ -285,7 +341,8 @@ class MarrowSettingsPanel(QWidget):
         self._el_key = _field("…", password=True)
         self._el_voice = _field("BAMYoBHLZM7lJgJAmFz0")
         for lbl, ww in [("API Key", self._el_key), ("Voice ID", self._el_voice)]:
-            ql = QLabel(lbl); ql.setStyleSheet(FORM_LABEL_STYLE)
+            ql = QLabel(lbl)
+            ql.setStyleSheet(FORM_LABEL_STYLE)
             form.addRow(ql, ww)
         lay.addLayout(form)
         note = QLabel("Leave key blank to use Windows SAPI (offline fallback).")
@@ -297,7 +354,8 @@ class MarrowSettingsPanel(QWidget):
         form2 = QFormLayout()
         form2.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self._whisper_model = _combo(["tiny", "base", "small", "medium", "large"])
-        ql = QLabel("Whisper model"); ql.setStyleSheet(FORM_LABEL_STYLE)
+        ql = QLabel("Whisper model")
+        ql.setStyleSheet(FORM_LABEL_STYLE)
         form2.addRow(ql, self._whisper_model)
         lay.addLayout(form2)
 
@@ -305,7 +363,8 @@ class MarrowSettingsPanel(QWidget):
         form3 = QFormLayout()
         form3.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self._marrow_name = _field("Marrow")
-        ql = QLabel("Name"); ql.setStyleSheet(FORM_LABEL_STYLE)
+        ql = QLabel("Name")
+        ql.setStyleSheet(FORM_LABEL_STYLE)
         form3.addRow(ql, self._marrow_name)
         lay.addLayout(form3)
 
@@ -321,7 +380,9 @@ class MarrowSettingsPanel(QWidget):
         lay.setSpacing(8)
 
         title = QLabel("Marrow")
-        title.setStyleSheet("color: rgba(230,230,235,255); font-size: 16px; font-weight: bold;")
+        title.setStyleSheet(
+            "color: rgba(230,230,235,255); font-size: 16px; font-weight: bold;"
+        )
         lay.addWidget(title)
 
         sub = QLabel("Ambient intelligence that lives with you.")
@@ -336,7 +397,9 @@ class MarrowSettingsPanel(QWidget):
             "Vision: Claude Haiku semantic OCR\n"
             "Storage: SQLite WAL + FTS5 trigram index"
         )
-        info.setStyleSheet("color: rgba(120,120,130,200); font-size: 9px; line-height: 1.6;")
+        info.setStyleSheet(
+            "color: rgba(120,120,130,200); font-size: 9px; line-height: 1.6;"
+        )
         info.setWordWrap(True)
         lay.addWidget(info)
 
@@ -347,16 +410,20 @@ class MarrowSettingsPanel(QWidget):
 
     def _load_values(self) -> None:
         import config
+
         self._provider.setCurrentText(config.LLM_PROVIDER)
         self._ant_key.setText(config.ANTHROPIC_API_KEY)
         self._ant_reasoning.setText(config.REASONING_MODEL)
         self._ant_scoring.setText(config.SCORING_MODEL)
+        self._ant_vision.setText(config.VISION_MODEL)
         self._oai_key.setText(config.OPENAI_API_KEY)
         self._oai_reasoning.setText(config.OPENAI_REASONING_MODEL)
         self._oai_scoring.setText(config.OPENAI_SCORING_MODEL)
+        self._oai_vision.setText(config.OPENAI_VISION_MODEL)
         self._ollama_url.setText(config.OLLAMA_BASE_URL)
-        self._ollama_reasoning.setText(config.OLLAMA_REASONING_MODEL)
-        self._ollama_scoring.setText(config.OLLAMA_SCORING_MODEL)
+        self._ollama_reasoning.setCurrentText(config.OLLAMA_REASONING_MODEL)
+        self._ollama_scoring.setCurrentText(config.OLLAMA_SCORING_MODEL)
+        self._ollama_vision.setCurrentText(config.OLLAMA_VISION_MODEL)
 
         self._reasoning_interval.setText(str(config.REASONING_INTERVAL))
         self._cooldown.setText(str(config.INTERRUPT_COOLDOWN))
@@ -380,48 +447,99 @@ class MarrowSettingsPanel(QWidget):
     def _save(self) -> None:
         """Write settings to ~/.marrow/.env and reload config."""
         vals = {
-            "LLM_PROVIDER":             self._provider.currentText(),
-            "ANTHROPIC_API_KEY":        self._ant_key.text(),
-            "REASONING_MODEL":          self._ant_reasoning.text(),
-            "SCORING_MODEL":            self._ant_scoring.text(),
-            "OPENAI_API_KEY":           self._oai_key.text(),
-            "OPENAI_REASONING_MODEL":   self._oai_reasoning.text(),
-            "OPENAI_SCORING_MODEL":     self._oai_scoring.text(),
-            "OLLAMA_BASE_URL":          self._ollama_url.text(),
-            "OLLAMA_REASONING_MODEL":   self._ollama_reasoning.text(),
-            "OLLAMA_SCORING_MODEL":     self._ollama_scoring.text(),
-            "REASONING_INTERVAL":       self._reasoning_interval.text(),
-            "INTERRUPT_COOLDOWN":       self._cooldown.text(),
-            "SCREENSHOT_INTERVAL":      self._screenshot_interval.text(),
-            "CONTEXT_WINDOW_SECONDS":   self._context_window.text(),
-            "HOTKEY_ENABLED":           "1" if self._hotkey_enabled.isChecked() else "0",
-            "WAKE_WORD_ENABLED":        "1" if self._wake_word_enabled.isChecked() else "0",
-            "SCREENSHOT_SAVE_TO_DISK":  "1" if self._screenshot_save.isChecked() else "0",
-            "TRAY_ENABLED":             "1" if self._tray_enabled.isChecked() else "0",
-            "ELEVENLABS_API_KEY":       self._el_key.text(),
-            "MARROW_VOICE_ID":          self._el_voice.text(),
-            "MARROW_NAME":              self._marrow_name.text(),
-            "WHISPER_MODEL":            self._whisper_model.currentText(),
+            "LLM_PROVIDER": self._provider.currentText(),
+            "ANTHROPIC_API_KEY": self._ant_key.text(),
+            "REASONING_MODEL": self._ant_reasoning.text(),
+            "SCORING_MODEL": self._ant_scoring.text(),
+            "VISION_MODEL": self._ant_vision.text(),
+            "OPENAI_API_KEY": self._oai_key.text(),
+            "OPENAI_REASONING_MODEL": self._oai_reasoning.text(),
+            "OPENAI_SCORING_MODEL": self._oai_scoring.text(),
+            "OPENAI_VISION_MODEL": self._oai_vision.text(),
+            "OLLAMA_BASE_URL": self._ollama_url.text(),
+            "OLLAMA_REASONING_MODEL": self._ollama_reasoning.currentText(),
+            "OLLAMA_SCORING_MODEL": self._ollama_scoring.currentText(),
+            "OLLAMA_VISION_MODEL": self._ollama_vision.currentText(),
+            "REASONING_INTERVAL": self._reasoning_interval.text(),
+            "INTERRUPT_COOLDOWN": self._cooldown.text(),
+            "SCREENSHOT_INTERVAL": self._screenshot_interval.text(),
+            "CONTEXT_WINDOW_SECONDS": self._context_window.text(),
+            "HOTKEY_ENABLED": "1" if self._hotkey_enabled.isChecked() else "0",
+            "WAKE_WORD_ENABLED": "1" if self._wake_word_enabled.isChecked() else "0",
+            "SCREENSHOT_SAVE_TO_DISK": "1"
+            if self._screenshot_save.isChecked()
+            else "0",
+            "TRAY_ENABLED": "1" if self._tray_enabled.isChecked() else "0",
+            "ELEVENLABS_API_KEY": self._el_key.text(),
+            "MARROW_VOICE_ID": self._el_voice.text(),
+            "MARROW_NAME": self._marrow_name.text(),
+            "WHISPER_MODEL": self._whisper_model.currentText(),
         }
 
         # Write .env
         ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
-        lines = [f'{k}="{v}"\n' for k, v in vals.items() if v]
+        lines = [
+            f'{k}="{str(v).replace('"', '\\"')}"\n'
+            for k, v in vals.items()
+            if v is not None
+        ]
         ENV_FILE.write_text("".join(lines), encoding="utf-8")
 
         # Hot-reload config
         try:
             from dotenv import load_dotenv
+
             load_dotenv(str(ENV_FILE), override=True)
             import importlib, config as cfg
+
             importlib.reload(cfg)
             from brain.llm import reset_client
+
             reset_client()
             log.info("Settings saved and applied.")
         except Exception as e:
             log.warning(f"Hot-reload failed: {e}")
 
         self.close()
+
+    def _detect_ollama_models(self) -> list[str]:
+        try:
+            p = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True,
+                text=True,
+                timeout=6,
+            )
+            if p.returncode != 0:
+                return []
+            models = []
+            for line in (p.stdout or "").splitlines():
+                s = line.strip()
+                if not s or s.lower().startswith("name"):
+                    continue
+                name = s.split()[0].strip()
+                if name and name not in models:
+                    models.append(name)
+            return models
+        except Exception:
+            return []
+
+    def _populate_ollama_models(self) -> None:
+        models = self._detect_ollama_models()
+        if not models:
+            log.warning("No Ollama models detected. Is `ollama` installed and running?")
+            return
+
+        for combo in (
+            self._ollama_reasoning,
+            self._ollama_scoring,
+            self._ollama_vision,
+        ):
+            current = combo.currentText().strip()
+            combo.clear()
+            combo.addItems(models)
+            if current:
+                combo.setCurrentText(current)
 
     # ── Paint & drag ──────────────────────────────────────────────────────
 
@@ -444,7 +562,9 @@ class MarrowSettingsPanel(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._drag_pos = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
 
     def mouseMoveEvent(self, event):
         if hasattr(self, "_drag_pos") and event.buttons() == Qt.MouseButton.LeftButton:

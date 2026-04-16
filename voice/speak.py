@@ -18,6 +18,7 @@ Omi reference:
 
 import asyncio
 import logging
+import platform
 import queue
 import random
 import threading
@@ -60,6 +61,7 @@ ELEVENLABS_VOICE_SETTINGS = {
 
 # ─── Public API ────────────────────────────────────────────────────────────────
 
+
 async def speak(text: str) -> None:
     """
     Speak text. Priority chain:
@@ -100,10 +102,12 @@ def cancel_speaking() -> None:
 
 # ─── ElevenLabs streaming ──────────────────────────────────────────────────────
 
+
 def _get_el_client():
     global _el_client
     if _el_client is None:
         from elevenlabs.client import ElevenLabs
+
         _el_client = ElevenLabs(api_key=config.ELEVENLABS_API_KEY)
     return _el_client
 
@@ -190,9 +194,11 @@ async def _speak_elevenlabs(text: str) -> None:
 
 # ─── Kokoro local TTS ─────────────────────────────────────────────────────────
 
+
 def _kokoro_available() -> bool:
     try:
         import kokoro_onnx  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -207,6 +213,7 @@ def _get_kokoro_pipeline():
     with _kokoro_lock:
         if _kokoro_pipeline is None:
             from kokoro_onnx import Kokoro
+
             # Downloads model + voices automatically on first call
             _kokoro_pipeline = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
         return _kokoro_pipeline
@@ -236,7 +243,7 @@ def _kokoro_generate_thread(text: str, chunk_q: queue.Queue) -> None:
             for i in range(0, len(audio_int16), chunk_size):
                 if _cancel_event.is_set():
                     break
-                chunk_q.put(audio_int16[i:i + chunk_size])
+                chunk_q.put(audio_int16[i : i + chunk_size])
             chunk_q.put((None, sample_rate))  # sentinel with rate
     except Exception as e:
         log.error(f"Kokoro generate thread error: {e}")
@@ -315,17 +322,22 @@ async def _speak_kokoro(text: str) -> None:
 
 # ─── Windows SAPI fallback ────────────────────────────────────────────────────
 
+
 async def _speak_system(text: str) -> None:
-    """Windows SAPI via PowerShell. Instant, no API, offline."""
-    # Escape for PowerShell string
-    safe = text.replace("'", "''").replace('"', '`"')
-    cmd = (
-        "PowerShell -NoProfile -Command \""
-        "Add-Type -AssemblyName System.Speech; "
-        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        "$s.Rate = 1; "
-        f"$s.Speak('{safe}')\""
-    )
+    """System TTS fallback: Windows SAPI or macOS `say`."""
+    if platform.system() == "Darwin":
+        safe = text.replace('"', "")
+        cmd = f'say "{safe}"'
+    else:
+        # Escape for PowerShell string
+        safe = text.replace("'", "''").replace('"', '`"')
+        cmd = (
+            'PowerShell -NoProfile -Command "'
+            "Add-Type -AssemblyName System.Speech; "
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "$s.Rate = 1; "
+            f"$s.Speak('{safe}')\""
+        )
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.DEVNULL,
