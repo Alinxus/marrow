@@ -482,7 +482,21 @@ def _run_qt() -> None:
 
         # Also wire message_spoken → toast (shows what Marrow said visually)
         def _on_message_spoken(text: str, urgency: int):
-            toast_mgr.show(config.MARROW_NAME, text, urgency)
+            def _open_context():
+                if not dashboard.isVisible():
+                    dashboard.open_near(orb.geometry())
+                try:
+                    dashboard._open_notification_context()
+                except Exception:
+                    pass
+
+            toast_mgr.show(
+                config.MARROW_NAME,
+                text,
+                urgency,
+                action_label="Open",
+                action_callback=_open_context,
+            )
 
         get_bridge().message_spoken.connect(_on_message_spoken)
 

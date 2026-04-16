@@ -55,6 +55,11 @@ SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.01"))
 # Actions
 MAX_ACTION_ITERATIONS = int(os.environ.get("MAX_ACTION_ITERATIONS", "8"))
 
+# Proactive interruption policy (Omi-style gating)
+# 1 = very strict, 5 = very frequent
+PROACTIVE_FREQUENCY = int(os.environ.get("PROACTIVE_FREQUENCY", "3"))
+MAX_DAILY_INTERRUPTS = int(os.environ.get("MAX_DAILY_INTERRUPTS", "12"))
+
 # Apps that signal deep-focus / flow state (interrupt less aggressively)
 FLOW_STATE_APPS = [
     "code",

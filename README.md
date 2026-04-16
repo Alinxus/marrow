@@ -13,7 +13,7 @@ It is designed for proactive behavior (not just chat-response), local-first oper
   - speak an insight
   - execute an action
   - stay silent
-- Applies interruption gating (urgency, meeting detection, flow-state, cooldown, dedupe)
+- Applies interruption gating (gate -> generate -> critic, urgency, meeting detection, flow-state, cooldown, dedupe)
 - Supports long-horizon context awareness (patterns over days/weeks)
 
 ## Key Architecture
@@ -81,7 +81,21 @@ REASONING_INTERVAL=30
 INTERRUPT_COOLDOWN=90
 SCREENSHOT_INTERVAL=3
 CONTEXT_WINDOW_SECONDS=120
+
+# Proactive policy
+PROACTIVE_FREQUENCY=3
+MAX_DAILY_INTERRUPTS=12
 ```
+
+## Proactive Decision Pipeline
+
+Marrow uses a three-stage interruption policy inspired by Omi's production behavior:
+
+1. Gate: score whether this moment is worth interrupting at all.
+2. Generate: produce candidate speak/action output.
+3. Critic: final quality check before surfacing.
+
+This reduces spammy interruptions and pushes Marrow toward high-signal moments.
 
 ## Vision Quality Notes
 

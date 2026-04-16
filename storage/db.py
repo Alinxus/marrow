@@ -287,6 +287,15 @@ def get_recent_interruptions(window_seconds: int) -> list:
     return [dict(r) for r in rows]
 
 
+def count_interruptions_since(ts_cutoff: float) -> int:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM interruptions WHERE ts > ?",
+        (ts_cutoff,),
+    ).fetchone()
+    return int(row["n"] if row else 0)
+
+
 def get_observations(limit: int = 50) -> list:
     conn = _connect()
     rows = conn.execute(

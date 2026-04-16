@@ -23,55 +23,74 @@ import time
 from typing import Optional
 
 from PyQt6.QtCore import (
-    QPoint, QPointF, QRectF, QRect, Qt, QTimer, pyqtSignal,
+    QPoint,
+    QPointF,
+    QRectF,
+    QRect,
+    Qt,
+    QTimer,
+    pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QColor, QFont, QLinearGradient, QPainter,
-    QPainterPath, QPen, QRadialGradient,
+    QColor,
+    QFont,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QRadialGradient,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QScrollArea, QSizePolicy,
-    QVBoxLayout, QWidget,
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
 
 log = logging.getLogger(__name__)
 
 # ─── Palette ──────────────────────────────────────────────────────────────────
 
-BG          = QColor(10, 10, 14, 248)
-BG_SECTION  = QColor(18, 18, 24, 180)
-BG_INPUT    = QColor(22, 22, 28, 220)
-BORDER      = QColor(255, 255, 255, 22)
-TEXT_PRI    = QColor(240, 240, 245)
-TEXT_SEC    = QColor(160, 160, 170)
-TEXT_DIM    = QColor(80,  80,  90)
-TEXT_USER   = QColor(180, 180, 190)
-TEXT_MARROW = QColor(235, 235, 242)   # white — Marrow's text
-ACCENT      = QColor(220, 220, 232)   # silver-white accent
-ACCENT_G    = QColor(74,  222, 128)
-ACCENT_A    = QColor(251, 191, 36)
-MIC_ON      = QColor(74,  222, 128)
-MIC_OFF     = QColor(72,  72,  82)
+BG = QColor(10, 10, 14, 248)
+BG_SECTION = QColor(18, 18, 24, 180)
+BG_INPUT = QColor(22, 22, 28, 220)
+BORDER = QColor(255, 255, 255, 22)
+TEXT_PRI = QColor(240, 240, 245)
+TEXT_SEC = QColor(160, 160, 170)
+TEXT_DIM = QColor(80, 80, 90)
+TEXT_USER = QColor(180, 180, 190)
+TEXT_MARROW = QColor(235, 235, 242)  # white — Marrow's text
+ACCENT = QColor(220, 220, 232)  # silver-white accent
+ACCENT_G = QColor(74, 222, 128)
+ACCENT_A = QColor(251, 191, 36)
+MIC_ON = QColor(74, 222, 128)
+MIC_OFF = QColor(72, 72, 82)
 
-DASH_W      = 360
-DASH_H      = 620
-RADIUS      = 14
-MAX_HISTORY = 20    # max chat exchanges to keep in memory
+DASH_W = 360
+DASH_H = 620
+RADIUS = 14
+MAX_HISTORY = 20  # max chat exchanges to keep in memory
 
 
 def _color_state(state: str) -> QColor:
     return {
-        "idle":     QColor(90, 90, 100),
+        "idle": QColor(90, 90, 100),
         "thinking": ACCENT_A,
         "speaking": ACCENT,
-        "acting":   ACCENT_G,
-        "error":    QColor(248, 113, 113),
+        "acting": ACCENT_G,
+        "error": QColor(248, 113, 113),
     }.get(state, QColor(90, 90, 100))
 
 
-def _lbl(text: str, color: QColor = TEXT_SEC, pt: int = 9,
-         bold: bool = False) -> QLabel:
+def _lbl(
+    text: str, color: QColor = TEXT_SEC, pt: int = 9, bold: bool = False
+) -> QLabel:
     w = QLabel(text)
     f = QFont()
     f.setPointSize(pt)
@@ -100,14 +119,15 @@ def _section_label(text: str) -> QLabel:
 
 # ─── Animated status dot ─────────────────────────────────────────────────────
 
+
 class MiniOrb(QWidget):
     def __init__(self, size: int = 10, parent=None):
         super().__init__(parent)
         self.setFixedSize(size, size)
-        self._size  = size
+        self._size = size
         self._state = "idle"
-        self._glow  = 0.5
-        self._t     = 0.0
+        self._glow = 0.5
+        self._t = 0.0
         t = QTimer(self)
         t.setInterval(40)
         t.timeout.connect(self._tick)
@@ -118,9 +138,16 @@ class MiniOrb(QWidget):
         self._t = 0.0
 
     def _tick(self):
-        speeds = {"idle": 0.4, "thinking": 2.5, "speaking": 3.5, "acting": 2.0, "error": 6.0}
+        speeds = {
+            "idle": 0.4,
+            "thinking": 2.5,
+            "speaking": 3.5,
+            "acting": 2.0,
+            "error": 6.0,
+        }
         self._t += speeds.get(self._state, 1.0) * 0.04
         import math
+
         self._glow = (math.sin(self._t) + 1.0) / 2.0
         self.update()
 
@@ -138,6 +165,7 @@ class MiniOrb(QWidget):
 
 # ─── Mic indicator dot ────────────────────────────────────────────────────────
 
+
 class MicDot(QWidget):
     """Small dot: green = listening, dim = off."""
 
@@ -145,7 +173,7 @@ class MicDot(QWidget):
         super().__init__(parent)
         self.setFixedSize(8, 8)
         self._on = False
-        self._t  = 0.0
+        self._t = 0.0
         self._glow = 0.5
         t = QTimer(self)
         t.setInterval(50)
@@ -158,7 +186,8 @@ class MicDot(QWidget):
 
     def _tick(self):
         import math
-        self._t   += 0.1 if self._on else 0.03
+
+        self._t += 0.1 if self._on else 0.03
         self._glow = (math.sin(self._t) + 1.0) / 2.0
         self.update()
 
@@ -174,12 +203,13 @@ class MicDot(QWidget):
 
 # ─── Chat bubble ─────────────────────────────────────────────────────────────
 
+
 class ChatBubble(QWidget):
     """Single message in the conversation (user or Marrow)."""
 
     def __init__(self, text: str, role: str, parent=None):
         super().__init__(parent)
-        self.role = role          # "user" or "marrow"
+        self.role = role  # "user" or "marrow"
         self.setStyleSheet("background: transparent;")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
@@ -187,9 +217,12 @@ class ChatBubble(QWidget):
 
         is_user = role == "user"
 
-        who = _lbl("You" if is_user else "Marrow",
-                   TEXT_USER if is_user else TEXT_MARROW,
-                   pt=7, bold=True)
+        who = _lbl(
+            "You" if is_user else "Marrow",
+            TEXT_USER if is_user else TEXT_MARROW,
+            pt=7,
+            bold=True,
+        )
         lay.addWidget(who)
 
         self._body = QLabel(text)
@@ -209,7 +242,113 @@ class ChatBubble(QWidget):
         self._body.setText(text)
 
 
+class NotificationCard(QWidget):
+    """Omi-style inline proactive card with open/dismiss affordances."""
+
+    open_requested = pyqtSignal()
+    dismissed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setVisible(False)
+        self._urgency = 3
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 10, 10, 10)
+        lay.setSpacing(10)
+
+        icon = QLabel("🔔")
+        icon.setStyleSheet("font-size: 14px; color: rgba(235,235,242,240);")
+        lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(3)
+
+        self._title = _lbl("Proactive Insight", TEXT_PRI, 9, bold=True)
+        text_col.addWidget(self._title)
+
+        self._body = _lbl("", TEXT_SEC, 9)
+        self._body.setWordWrap(True)
+        text_col.addWidget(self._body)
+
+        self._meta = _lbl("", TEXT_DIM, 8)
+        text_col.addWidget(self._meta)
+        lay.addLayout(text_col, 1)
+
+        self._open_btn = QPushButton("Open")
+        self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_btn.setFixedSize(52, 24)
+        self._open_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,14);
+                color: rgba(232,232,238,240);
+                border: 1px solid rgba(255,255,255,24);
+                border-radius: 12px;
+                font-size: 8pt;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: rgba(255,255,255,22); }
+        """)
+        self._open_btn.clicked.connect(self.open_requested.emit)
+        lay.addWidget(self._open_btn, 0, Qt.AlignmentFlag.AlignTop)
+
+        self._dismiss_btn = QPushButton("×")
+        self._dismiss_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._dismiss_btn.setFixedSize(20, 20)
+        self._dismiss_btn.setStyleSheet("""
+            QPushButton { background: transparent; color: rgba(150,150,160,190); border: none; }
+            QPushButton:hover { color: rgba(225,225,235,255); }
+        """)
+        self._dismiss_btn.clicked.connect(self._dismiss)
+        lay.addWidget(self._dismiss_btn, 0, Qt.AlignmentFlag.AlignTop)
+
+        self._last_ts = 0.0
+
+    def _dismiss(self):
+        self.setVisible(False)
+        self.dismissed.emit()
+
+    def show_message(self, text: str, urgency: int):
+        self._urgency = max(1, min(5, urgency))
+        self._last_ts = time.time()
+        trimmed = text[:170] + "…" if len(text) > 170 else text
+        self._body.setText(trimmed)
+        self._meta.setText(f"just now · urgency {self._urgency}")
+        self.setVisible(True)
+        self.update()
+
+    def tick(self):
+        if not self.isVisible() or not self._last_ts:
+            return
+        diff = int(time.time() - self._last_ts)
+        ago = f"{diff}s ago" if diff < 60 else f"{diff // 60}m ago"
+        self._meta.setText(f"{ago} · urgency {self._urgency}")
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+
+        urgency_color = {
+            1: QColor(248, 113, 113),
+            2: QColor(251, 146, 60),
+            3: QColor(251, 191, 36),
+            4: QColor(96, 165, 250),
+            5: QColor(74, 222, 128),
+        }.get(self._urgency, QColor(96, 165, 250))
+
+        p.setBrush(QColor(20, 20, 28, 210))
+        p.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
+
+        p.setBrush(urgency_color)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(QRectF(8, 10, 3, max(14, self.height() - 20)), 2, 2)
+
+
 # ─── Chat section ─────────────────────────────────────────────────────────────
+
 
 class ChatSection(QWidget):
     """Conversation history + text input."""
@@ -219,7 +358,7 @@ class ChatSection(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background: transparent;")
-        self._history: list[tuple[str, str]] = []   # (role, text)
+        self._history: list[tuple[str, str]] = []  # (role, text)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -247,10 +386,7 @@ class ChatSection(QWidget):
         self._chat_lay.setSpacing(6)
         self._chat_lay.addStretch()
 
-        self._empty_lbl = _lbl(
-            "Type a task below — or say \"Hey Marrow\"",
-            TEXT_DIM, 8
-        )
+        self._empty_lbl = _lbl('Type a task below — or say "Hey Marrow"', TEXT_DIM, 8)
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._chat_lay.addWidget(self._empty_lbl)
 
@@ -358,6 +494,7 @@ class ChatSection(QWidget):
 
 # ─── Info sections ────────────────────────────────────────────────────────────
 
+
 class WatchingSection(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -366,7 +503,7 @@ class WatchingSection(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
         lay.addWidget(_section_label("Watching"))
-        self._app   = _lbl("—", TEXT_PRI, 10, bold=True)
+        self._app = _lbl("—", TEXT_PRI, 10, bold=True)
         self._title = _lbl("", TEXT_SEC, 9)
         self._title.setWordWrap(True)
         lay.addWidget(self._app)
@@ -385,7 +522,7 @@ class MessageSection(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
         lay.addWidget(_section_label("Last Proactive Message"))
-        self._msg  = _lbl("Nothing yet", TEXT_SEC, 9)
+        self._msg = _lbl("Nothing yet", TEXT_SEC, 9)
         self._msg.setWordWrap(True)
         self._meta = _lbl("", TEXT_DIM, 8)
         lay.addWidget(self._msg)
@@ -420,7 +557,7 @@ class StatsSection(QWidget):
             d = json.loads(json_str)
             screens = d.get("screenshots", 0)
             actions = d.get("actions", 0)
-            speaks  = d.get("speaks", 0)
+            speaks = d.get("speaks", 0)
             self._line.setText(
                 f"{screens} screens captured · {speaks} messages · {actions} actions"
             )
@@ -430,6 +567,7 @@ class StatsSection(QWidget):
 
 # ─── Main dashboard ───────────────────────────────────────────────────────────
 
+
 class MarrowDashboard(QWidget):
     """The full information panel — opened/closed by the orb."""
 
@@ -438,17 +576,18 @@ class MarrowDashboard(QWidget):
     def __init__(self, parent=None):
         super().__init__(
             parent,
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFixedSize(DASH_W, DASH_H)
 
-        self._state    = "idle"
+        self._state = "idle"
         self._drag_pos: Optional[QPoint] = None
         self._pending_response = False
+        self._last_proactive_text = ""
 
         self._build()
         self._connect_bridge()
@@ -477,8 +616,8 @@ class MarrowDashboard(QWidget):
         hdr.addStretch()
 
         # Mic indicator
-        self._mic_dot  = MicDot()
-        self._mic_lbl  = _lbl("mic off", TEXT_DIM, 7)
+        self._mic_dot = MicDot()
+        self._mic_lbl = _lbl("mic off", TEXT_DIM, 7)
         hdr.addWidget(self._mic_dot)
         hdr.addSpacing(3)
         hdr.addWidget(self._mic_lbl)
@@ -511,6 +650,13 @@ class MarrowDashboard(QWidget):
 
         root.addLayout(hdr)
         root.addSpacing(8)
+
+        self._notif = NotificationCard()
+        self._notif.open_requested.connect(self._open_notification_context)
+        self._notif.dismissed.connect(lambda: None)
+        root.addWidget(self._notif)
+        root.addSpacing(6)
+
         root.addWidget(_sep())
         root.addSpacing(6)
 
@@ -571,6 +717,7 @@ class MarrowDashboard(QWidget):
     def _connect_bridge(self):
         try:
             from ui.bridge import get_bridge
+
             b = get_bridge()
             b.state_changed.connect(self._on_state)
             b.focus_changed.connect(self._watching.update_focus)
@@ -592,6 +739,8 @@ class MarrowDashboard(QWidget):
     def _on_marrow_spoke(self, text: str, urgency: int):
         """Marrow proactively said something — show in message section."""
         self._message.update_message(text, urgency)
+        self._notif.show_message(text, urgency)
+        self._last_proactive_text = text
 
     def _on_mic_active(self, active: bool):
         self._mic_dot.set_active(active)
@@ -608,6 +757,7 @@ class MarrowDashboard(QWidget):
         self._pending_response = True
         try:
             from ui.bridge import get_bridge
+
             get_bridge().text_task_submitted.emit(text)
         except Exception as e:
             log.warning(f"Task submit error: {e}")
@@ -619,6 +769,16 @@ class MarrowDashboard(QWidget):
 
     def _tick_meta(self):
         self._message.tick()
+        self._notif.tick()
+
+    def _open_notification_context(self):
+        """Bring proactive card context into chat continuity."""
+        text = getattr(self, "_last_proactive_text", "")
+        if not text:
+            return
+        self._chat.add_message("marrow", text)
+        self._chat._input.setFocus()
+        self._chat._input.setPlaceholderText("Ask a follow-up about this insight…")
 
     # ── Paint ─────────────────────────────────────────────────────────────
 
@@ -628,9 +788,7 @@ class MarrowDashboard(QWidget):
         r = QRectF(self.rect())
 
         # Shadow
-        shadow = QRadialGradient(
-            QPointF(r.center().x(), r.bottom()), r.width() * 0.8
-        )
+        shadow = QRadialGradient(QPointF(r.center().x(), r.bottom()), r.width() * 0.8)
         shadow.setColorAt(0.0, QColor(0, 0, 0, 55))
         shadow.setColorAt(1.0, QColor(0, 0, 0, 0))
         p.setBrush(shadow)
@@ -662,7 +820,9 @@ class MarrowDashboard(QWidget):
     def mousePressEvent(self, event):
         # Only drag from non-interactive area (header region approx)
         if event.button() == Qt.MouseButton.LeftButton and event.pos().y() < 36:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._drag_pos = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
 
     def mouseMoveEvent(self, event):
         if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
@@ -678,7 +838,7 @@ class MarrowDashboard(QWidget):
         x = orb_geom.left() - DASH_W - 12
         y = orb_geom.bottom() - DASH_H
         x = max(screen.left() + 6, min(x, screen.right() - DASH_W - 6))
-        y = max(screen.top()  + 6, min(y, screen.bottom() - DASH_H - 6))
+        y = max(screen.top() + 6, min(y, screen.bottom() - DASH_H - 6))
         self.move(x, y)
         self.show()
         self.raise_()

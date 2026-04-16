@@ -352,6 +352,146 @@ Nothing:
 - Shorter is better. One sharp sentence beats three hedged ones."""
 
 
+_FREQUENCY_TO_GATE_THRESHOLD = {
+    1: 0.92,
+    2: 0.85,
+    3: 0.78,
+    4: 0.70,
+    5: 0.60,
+}
+
+_GATE_PROMPT = """You are the proactive notification gate.
+
+Decide if this moment is worth interrupting the user at all.
+
+IMPORTANT: Most moments are NOT worth an interruption. Default to should_notify=false.
+
+Return strict JSON only:
+{"should_notify": true|false, "relevance_score": 0.0-1.0, "why": "one short sentence"}
+
+Rules:
+- High score only when interruption changes the user's next action now.
+- should_notify=true only if there is a concrete mistake risk, time-critical opportunity,
+  or a genuinely non-obvious connection the user would likely miss.
+- Reject routine browsing, obvious reminders, generic coaching, or weakly grounded hunches.
+- Reject anything repetitive or similar to recent interruptions.
+- Be conservative and specific.
+"""
+
+
+_CRITIC_PROMPT = """You are the final critic for a proactive interruption.
+
+Evaluate whether this message should be sent now.
+
+Message: {message}
+Reasoning: {reasoning}
+Context: {context}
+
+Return strict JSON only:
+{"approved": true|false, "confidence": 0.0-1.0, "why": "one short sentence"}
+
+Imagine the user is busy and sees this interrupt.
+Approve only if they'd think: "glad I saw this, this changes what I do next."
+
+Reject if ANY are true:
+- Generic / obvious / repetitive
+- Vague corporate wording
+- Weak grounding in current context
+- Bad timing or low urgency
+- Removing this interruption would change nothing
+
+Approve only if ALL are true:
+- Specific and concrete to the exact moment
+- Non-obvious enough that user may miss it
+- Actionable now
+"""
+
+
+def _gate_threshold() -> float:
+    freq = max(1, min(5, int(config.PROACTIVE_FREQUENCY)))
+    return _FREQUENCY_TO_GATE_THRESHOLD.get(freq, 0.74)
+
+
+def _daily_limit_ok() -> bool:
+    cutoff = time.time() - 86400
+    today_interrupts = db.count_interruptions_since(cutoff)
+    if today_interrupts >= config.MAX_DAILY_INTERRUPTS:
+        log.debug(
+            f"Daily interrupt cap reached ({today_interrupts}/{config.MAX_DAILY_INTERRUPTS})"
+        )
+        return False
+    return True
+
+
+async def _gate_context(full_context: str) -> bool:
+    """Omi-style gate pass before expensive reasoning/action stage."""
+    from brain.llm import get_client
+
+    llm = get_client()
+    if llm.provider == "none":
+        return False
+
+    try:
+        response = await llm.create(
+            messages=[{"role": "user", "content": full_context[:2200]}],
+            system=_GATE_PROMPT,
+            max_tokens=120,
+            model_type="scoring",
+        )
+        raw = response.text.strip()
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            return True
+
+        gate = json.loads(raw[start:end])
+        score = float(gate.get("relevance_score", 0.5))
+        should_notify = bool(gate.get("should_notify", False))
+        threshold = _gate_threshold()
+        passed = should_notify and score >= threshold
+        log.debug(f"Gate: score={score:.2f} threshold={threshold:.2f} pass={passed}")
+        return passed
+    except Exception as e:
+        log.debug(f"Gate fallback (error): {e}")
+        return True
+
+
+async def _critic_approve(message: str, reasoning: str, context: str) -> bool:
+    """Final critic check to suppress weak interrupts."""
+    from brain.llm import get_client
+
+    llm = get_client()
+    if llm.provider == "none":
+        return False
+
+    prompt = _CRITIC_PROMPT.format(
+        message=message[:300],
+        reasoning=reasoning[:200],
+        context=context[:700],
+    )
+    try:
+        response = await llm.create(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
+            model_type="scoring",
+        )
+        raw = response.text.strip()
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            return True
+
+        critic = json.loads(raw[start:end])
+        approved = bool(critic.get("approved", False))
+        confidence = float(critic.get("confidence", 0.5))
+        ok = approved and confidence >= 0.55
+        log.debug(f"Critic: approved={approved} confidence={confidence:.2f} pass={ok}")
+        return ok
+    except Exception as e:
+        log.debug(f"Critic fallback (error): {e}")
+        return True
+
+
 # ─── Main loop ─────────────────────────────────────────────────────────────────
 
 
@@ -387,12 +527,20 @@ async def reasoning_loop(
                 )
             )
 
-            # Reasoning + world model extraction run in parallel
-            result, _ = await asyncio.gather(
-                _run_reasoning(full_context),
-                _extract_world_model(context_str, context.get("screenshots", [])),
-                return_exceptions=False,
-            )
+            # Gate first (Omi-style): skip interruption generation on low-value moments
+            gate_passed = await _gate_context(full_context)
+
+            if gate_passed:
+                # Reasoning + world model extraction run in parallel
+                result, _ = await asyncio.gather(
+                    _run_reasoning(full_context),
+                    _extract_world_model(context_str, context.get("screenshots", [])),
+                    return_exceptions=False,
+                )
+            else:
+                await _extract_world_model(context_str, context.get("screenshots", []))
+                result = None
+                log.debug("Gate rejected moment: no proactive output")
 
             if not result:
                 log.debug("Reasoning: nothing to surface")
@@ -449,6 +597,19 @@ _ANTI_PATTERNS = [
     "i can see that",
 ]
 
+_BANNED_STARTS = [
+    "confirm",
+    "ensure",
+    "clarify",
+    "consider",
+    "prioritize",
+    "remember",
+    "review",
+    "align",
+    "make sure",
+    "don't forget",
+]
+
 
 async def _four_axis_score(message: str, reasoning: str, context: str) -> float:
     """
@@ -461,6 +622,12 @@ async def _four_axis_score(message: str, reasoning: str, context: str) -> float:
     for pattern in _ANTI_PATTERNS:
         if pattern in msg_lower:
             log.debug(f"4-axis: anti-pattern match '{pattern}' — rejected")
+            return -1.0
+
+    msg_start = msg_lower.strip().lstrip("\"'`([{").strip()
+    for starter in _BANNED_STARTS:
+        if msg_start.startswith(starter):
+            log.debug(f"4-axis: banned opener '{starter}' — rejected")
             return -1.0
 
     try:
@@ -528,6 +695,9 @@ async def _handle_result(
     )
 
     if should_speak and message:
+        if not _daily_limit_ok():
+            return
+
         # 4-axis confidence filter before even hitting the interrupt engine
         score = await _four_axis_score(message, reasoning, context_str[:400])
         if score < 0:
@@ -535,6 +705,11 @@ async def _handle_result(
             return
         if score < 0.45:
             log.debug(f"4-axis rejected (score={score:.2f}): {message[:60]}")
+            return
+
+        # Final critic pass (Omi-style generate -> critic)
+        if not await _critic_approve(message, reasoning, context_str):
+            log.debug(f"Critic rejected: {message[:60]}")
             return
 
         if interrupt_engine.should_speak(candidate):
