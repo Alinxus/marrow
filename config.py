@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+TOKEN_SAVER_MODE = os.environ.get("TOKEN_SAVER_MODE", "0") == "1"
+
 # ─── LLM Provider ─────────────────────────────────────────────────────────────
 # Set LLM_PROVIDER to: "auto" | "anthropic" | "openai" | "ollama" | "none"
 # auto = prefer configured cloud key, otherwise local Ollama, otherwise no-LLM mode
@@ -54,6 +56,12 @@ SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.01"))
 
 # Actions
 MAX_ACTION_ITERATIONS = int(os.environ.get("MAX_ACTION_ITERATIONS", "8"))
+AUTO_COMPLEX_ESCALATION = os.environ.get("AUTO_COMPLEX_ESCALATION", "1") == "1"
+ADAPTER_AUTO_LEARN = os.environ.get("ADAPTER_AUTO_LEARN", "1") == "1"
+ADAPTER_SUGGEST_THRESHOLD = int(os.environ.get("ADAPTER_SUGGEST_THRESHOLD", "3"))
+ADAPTER_MIN_TRUST_TO_RECOMMEND = float(
+    os.environ.get("ADAPTER_MIN_TRUST_TO_RECOMMEND", "0.35")
+)
 
 # Proactive interruption policy (Omi-style gating)
 # 1 = very strict, 5 = very frequent
@@ -94,8 +102,48 @@ SCREENSHOT_SAVE_TO_DISK = os.environ.get("SCREENSHOT_SAVE_TO_DISK", "1") == "1"
 SCREEN_VISION_MAX_SIZE = int(os.environ.get("SCREEN_VISION_MAX_SIZE", "1920"))
 SCREEN_VISION_JPEG_QUALITY = int(os.environ.get("SCREEN_VISION_JPEG_QUALITY", "85"))
 
+# Token controls
+VISION_MAX_TOKENS = int(
+    os.environ.get("VISION_MAX_TOKENS", "320" if TOKEN_SAVER_MODE else "700")
+)
+SCREEN_VISION_INTERVAL_SECONDS = int(
+    os.environ.get("SCREEN_VISION_INTERVAL_SECONDS", "12" if TOKEN_SAVER_MODE else "4")
+)
+REASONING_MAX_TOKENS = int(
+    os.environ.get("REASONING_MAX_TOKENS", "360" if TOKEN_SAVER_MODE else "600")
+)
+WORLD_MODEL_MAX_TOKENS = int(
+    os.environ.get("WORLD_MODEL_MAX_TOKENS", "220" if TOKEN_SAVER_MODE else "512")
+)
+GATE_MAX_TOKENS = int(
+    os.environ.get("GATE_MAX_TOKENS", "80" if TOKEN_SAVER_MODE else "120")
+)
+CRITIC_MAX_TOKENS = int(
+    os.environ.get("CRITIC_MAX_TOKENS", "80" if TOKEN_SAVER_MODE else "120")
+)
+FOUR_AXIS_MAX_TOKENS = int(
+    os.environ.get("FOUR_AXIS_MAX_TOKENS", "90" if TOKEN_SAVER_MODE else "150")
+)
+REASONING_CONTEXT_CHAR_LIMIT = int(
+    os.environ.get(
+        "REASONING_CONTEXT_CHAR_LIMIT", "3600" if TOKEN_SAVER_MODE else "7000"
+    )
+)
+GATE_CONTEXT_CHAR_LIMIT = int(
+    os.environ.get("GATE_CONTEXT_CHAR_LIMIT", "1400" if TOKEN_SAVER_MODE else "2200")
+)
+MEMORY_REFRESH_CYCLES = int(
+    os.environ.get("MEMORY_REFRESH_CYCLES", "3" if TOKEN_SAVER_MODE else "1")
+)
+
 # System tray
 TRAY_ENABLED = os.environ.get("TRAY_ENABLED", "1") == "1"
+
+# UI mode
+# orb = small always-on orb + optional dashboard
+# controlbar = unified floating control bar
+UI_MODE = os.environ.get("UI_MODE", "orb").lower()
+CONTROL_BAR_AUTO_SHOW = os.environ.get("CONTROL_BAR_AUTO_SHOW", "0") == "1"
 
 # On-demand activation
 ON_DEMAND_HOTKEY = os.environ.get("ON_DEMAND_HOTKEY", "ctrl+shift+m")

@@ -251,19 +251,10 @@ Output as a JSON array of task strings:
         but only pass the subset of MARROW_TOOLS that match allowed_tools.
         This means subagents actually work — not a stub.
         """
-        from actions.executor import MARROW_TOOLS, _handle_tool_call
+        from actions.executor import MARROW_TOOLS, _async_handle_tool_call
+        from brain.llm import get_client
 
-        client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
-
-        # Filter to only the tools this subagent type is allowed to use
-        # Never allow delegate_task (no recursive delegation)
-        # For tool-use with subagents, we need Anthropic
-        # This is a limitation - tool_use works best with Anthropic
-        import anthropic
-
-        client = anthropic.AsyncAnthropic(
-            api_key=config.ANTHROPIC_API_KEY or config.OPENAI_API_KEY or "dummy"
-        )
+        llm = get_client()
 
         blocked = BLOCKED_TOOLS
         filtered_tools = [
@@ -276,79 +267,45 @@ Output as a JSON array of task strings:
 Available tools: {", ".join(t["name"] for t in filtered_tools)}
 Be concise. Return your result as a brief summary at the end."""
 
-        messages = [
-            {
-                "role": "user",
-                "content": f"{context}\n\nTask: {task}" if context else task,
-            }
-        ]
         tool_calls = 0
 
-        for iteration in range(self.max_iterations):
-            try:
-                kwargs = dict(
-                    model=config.SCORING_MODEL,
-                    max_tokens=1024,
-                    system=system_prompt,
-                    messages=messages,
-                )
-                if filtered_tools:
-                    kwargs["tools"] = filtered_tools
-                else:
-                    kwargs["tools"] = anthropic.NOT_GIVEN
+        async def _tool_handler(name: str, inp: dict) -> str:
+            return await _async_handle_tool_call(name, inp, context)
 
-                response = await client.messages.create(**kwargs)
+        async def _on_tool_call(name: str, inp: dict, result: str) -> None:
+            nonlocal tool_calls
+            tool_calls += 1
 
-                if response.stop_reason == "end_turn":
-                    text = ""
-                    for block in response.content:
-                        if hasattr(block, "text"):
-                            text = block.text
-                            break
-                    return SubagentResult(
-                        agent_id=agent_id,
-                        success=True,
-                        output=text,
-                        tool_calls=tool_calls,
-                    )
-
-                if response.stop_reason == "tool_use":
-                    tool_calls += 1
-                    messages.append({"role": "assistant", "content": response.content})
-                    results = []
-                    for block in response.content:
-                        if block.type == "tool_use":
-                            # Run tool in executor thread (sync tools)
-                            loop = asyncio.get_running_loop()
-                            result = await loop.run_in_executor(
-                                None, _handle_tool_call, block.name, block.input
-                            )
-                            results.append(
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": block.id,
-                                    "content": result,
-                                }
-                            )
-                    messages.append({"role": "user", "content": results})
-                    continue
-
-                break
-
-            except Exception as e:
-                return SubagentResult(
-                    agent_id=agent_id,
-                    success=False,
-                    output="",
-                    error=str(e),
-                )
-
-        return SubagentResult(
-            agent_id=agent_id,
-            success=False,
-            output="Max iterations reached",
-            tool_calls=tool_calls,
-        )
+        try:
+            text = await llm.create_with_tools(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"{context}\n\nTask: {task}" if context else task,
+                    }
+                ],
+                tools=filtered_tools,
+                tool_handler=_tool_handler,
+                system=system_prompt,
+                max_tokens=700,
+                model_type="scoring",
+                max_iterations=self.max_iterations,
+                on_tool_call=_on_tool_call,
+            )
+            return SubagentResult(
+                agent_id=agent_id,
+                success=True,
+                output=text or "",
+                tool_calls=tool_calls,
+            )
+        except Exception as e:
+            return SubagentResult(
+                agent_id=agent_id,
+                success=False,
+                output="",
+                error=str(e),
+                tool_calls=tool_calls,
+            )
 
     def _aggregate_results(
         self,

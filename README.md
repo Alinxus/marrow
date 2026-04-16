@@ -131,7 +131,14 @@ CONTEXT_WINDOW_SECONDS=120
 # Proactive policy
 PROACTIVE_FREQUENCY=3
 MAX_DAILY_INTERRUPTS=12
+
+# UI mode
+UI_MODE=orb
+CONTROL_BAR_AUTO_SHOW=0
 ```
+
+`UI_MODE=orb` gives the small low-distraction orb with optional dashboard.
+Set `UI_MODE=controlbar` if you want the unified floating bar.
 
 ## Proactive Decision Pipeline
 
@@ -154,6 +161,33 @@ If screen understanding feels weak:
 
 When no vision backend is available, Marrow falls back to local window metadata so capture pipeline still works.
 
+## Token Saver Mode
+
+To cut token usage significantly, enable:
+
+```env
+TOKEN_SAVER_MODE=1
+```
+
+This automatically reduces:
+
+- vision token budget per frame
+- reasoning token budget
+- critic/gate token budgets
+- context size passed to models
+- memory-refresh frequency (reuses cached memory context for a few cycles)
+- vision call frequency (throttled even when screenshots continue)
+
+You can still override any specific limit in `.env`:
+
+```env
+VISION_MAX_TOKENS=320
+SCREEN_VISION_INTERVAL_SECONDS=12
+REASONING_MAX_TOKENS=360
+WORLD_MODEL_MAX_TOKENS=220
+MEMORY_REFRESH_CYCLES=3
+```
+
 ## Audio Device Troubleshooting
 
 If you see `Error querying device -1`:
@@ -173,6 +207,28 @@ Examples of proactive outcomes:
 - repeated outbound outreach with no response -> communication strategy warning
 - suspicious/high-risk media claims -> factual caution
 - active-call participant/presence shift signals -> attention nudge
+
+## Local Adapters (Persistent Capability Spawn)
+
+Marrow can persist custom local adapters for recurring tasks.
+
+- `create_local_adapter` creates a reusable adapter tool
+- adapters are saved in `~/.marrow/adapters/`
+- adapter tools auto-register on next run as `adapter_<name>`
+- use `list_local_adapters` to inspect registered adapters
+- use `verify_local_adapter` to smoke-test generated adapters
+- adapters maintain trust metadata (runs/success/fail) in manifest
+- executor can recommend a high-trust adapter for matching tasks before generic fallback routes
+
+Auto-learn mode can suggest adapter creation when it detects repeated tasks:
+
+```env
+ADAPTER_AUTO_LEARN=1
+ADAPTER_SUGGEST_THRESHOLD=3
+ADAPTER_MIN_TRUST_TO_RECOMMEND=0.35
+```
+
+This lets Marrow "work with what it has" and evolve local capabilities without hardcoding everything in core tools.
 
 ## Security and Safety
 

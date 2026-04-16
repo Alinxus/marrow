@@ -415,11 +415,36 @@ def _run_qt() -> None:
 
     QTimer.singleShot(0, _start_backend_once)
 
-    # ── Unified floating control bar ───────────────────────────────────────
-    from ui.control_bar import MarrowControlBar
+    # ── UI surface selection ───────────────────────────────────────────────
+    ui_mode = (config.UI_MODE or "orb").lower()
+    control_bar = None
+    dashboard = None
+    orb = None
 
-    control_bar = MarrowControlBar()
-    control_bar.show()
+    if ui_mode == "controlbar":
+        from ui.control_bar import MarrowControlBar
+
+        control_bar = MarrowControlBar()
+        if config.CONTROL_BAR_AUTO_SHOW:
+            control_bar.show()
+    else:
+        # Default: small orb with optional dashboard (less distracting)
+        from ui.orb import MarrowOrb
+        from ui.dashboard import MarrowDashboard
+
+        orb = MarrowOrb()
+        orb.connect_bridge()
+        orb.show()
+
+        dashboard = MarrowDashboard()
+
+        def _toggle_dashboard():
+            if dashboard.isVisible():
+                dashboard.hide()
+            else:
+                dashboard.open_near(orb.geometry())
+
+        orb.dashboard_toggle.connect(_toggle_dashboard)
 
     # ── Settings panel ────────────────────────────────────────────────────
     settings_panel = [None]  # lazy singleton
@@ -435,12 +460,19 @@ def _run_qt() -> None:
         except Exception as e:
             log.warning(f"Settings panel error: {e}")
 
-    # settings available from control bar and tray
+    # settings entry points
+    if orb:
+        orb.settings_requested.connect(_show_settings)
+    if dashboard:
+        dashboard.settings_requested.connect(_show_settings)
 
     # ── Quit ─────────────────────────────────────────────────────────────
     def _quit():
         _request_shutdown()
         app.quit()
+
+    if orb:
+        orb.quit_requested.connect(_quit)
 
     # ── Text task: connect from Qt main thread (required for signal safety) ──
     try:
@@ -480,12 +512,20 @@ def _run_qt() -> None:
         # Also wire message_spoken → toast (shows what Marrow said visually)
         def _on_message_spoken(text: str, urgency: int):
             def _open_context():
-                if not control_bar.isVisible():
-                    control_bar.show()
-                try:
-                    control_bar.open_with_notification_context(text)
-                except Exception:
-                    pass
+                if control_bar is not None:
+                    if not control_bar.isVisible():
+                        control_bar.show()
+                    try:
+                        control_bar.open_with_notification_context(text)
+                    except Exception:
+                        pass
+                elif dashboard is not None and orb is not None:
+                    if not dashboard.isVisible():
+                        dashboard.open_near(orb.geometry())
+                    try:
+                        dashboard._open_notification_context()
+                    except Exception:
+                        pass
 
             toast_mgr.show(
                 config.MARROW_NAME,
@@ -510,7 +550,16 @@ def _run_qt() -> None:
     checker.start(1000)
 
     # ── Tray ─────────────────────────────────────────────────────────────
-    _build_tray(app, control_bar.toggle_visibility)
+    def _toggle_surface():
+        if control_bar is not None:
+            control_bar.toggle_visibility()
+        elif dashboard is not None and orb is not None:
+            if dashboard.isVisible():
+                dashboard.hide()
+            else:
+                dashboard.open_near(orb.geometry())
+
+    _build_tray(app, _toggle_surface)
 
     sys.exit(app.exec())
 

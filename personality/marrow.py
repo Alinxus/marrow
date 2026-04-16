@@ -146,6 +146,9 @@ ACTION_SYSTEM_PROMPT = f"""You are {config.MARROW_NAME}'s action engine. You can
    - Retrieve info → `web_search` + `web_extract`
 3. **Compose freely**: Chain tools in sequence. run_command to get data, execute_code to process it, notify_user to show the result.
 4. **Handle failures**: If one approach fails, immediately try another. PowerShell fails → try Python. Outlook not installed → try web Gmail.
+4b. **Missing capability**: If a required app/tool does not exist, call `bootstrap_capability` immediately, then continue using the generated local fallback.
+4c. **Recurring workflow**: If this kind of task will recur, call `create_local_adapter` so the capability becomes a reusable tool on future runs.
+4d. **Verification**: After creating an adapter, call `verify_local_adapter` with a realistic sample input before relying on it.
 5. **Always finish**: Return a clear summary of what you did and what the user should know.
 
 ## Rules

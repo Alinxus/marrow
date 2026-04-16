@@ -252,6 +252,8 @@ class NotificationCard(QWidget):
         super().__init__(parent)
         self.setVisible(False)
         self._urgency = 3
+        self._drag_start: Optional[QPoint] = None
+        self._origin_pos: Optional[QPoint] = None
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 10, 10, 10)
@@ -274,6 +276,10 @@ class NotificationCard(QWidget):
 
         self._meta = _lbl("", TEXT_DIM, 8)
         text_col.addWidget(self._meta)
+
+        self._cue = _lbl("", QColor(110, 110, 124), 7)
+        self._cue.setWordWrap(True)
+        text_col.addWidget(self._cue)
         lay.addLayout(text_col, 1)
 
         self._open_btn = QPushButton("Open")
@@ -309,12 +315,13 @@ class NotificationCard(QWidget):
         self.setVisible(False)
         self.dismissed.emit()
 
-    def show_message(self, text: str, urgency: int):
+    def show_message(self, text: str, urgency: int, cue: str = ""):
         self._urgency = max(1, min(5, urgency))
         self._last_ts = time.time()
         trimmed = text[:170] + "…" if len(text) > 170 else text
         self._body.setText(trimmed)
         self._meta.setText(f"just now · urgency {self._urgency}")
+        self._cue.setText(f"why now: {cue}" if cue else "")
         self.setVisible(True)
         self.update()
 
@@ -345,6 +352,28 @@ class NotificationCard(QWidget):
         p.setBrush(urgency_color)
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(QRectF(8, 10, 3, max(14, self.height() - 20)), 2, 2)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.globalPosition().toPoint()
+            self._origin_pos = self.pos()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None or self._origin_pos is None:
+            return
+        delta = event.globalPosition().toPoint() - self._drag_start
+        self.move(self._origin_pos + QPoint(delta.x(), 0))
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_start is None or self._origin_pos is None:
+            return
+        dx = self.pos().x() - self._origin_pos.x()
+        if abs(dx) > 90:
+            self._dismiss()
+        else:
+            self.move(self._origin_pos)
+        self._drag_start = None
+        self._origin_pos = None
 
 
 # ─── Chat section ─────────────────────────────────────────────────────────────
@@ -512,6 +541,13 @@ class WatchingSection(QWidget):
     def update_focus(self, app: str, title: str):
         self._app.setText(app or "—")
         self._title.setText(title[:60] if title else "")
+
+    def cue(self) -> str:
+        app = self._app.text().strip()
+        title = self._title.text().strip()
+        if app and title:
+            return f"{app} · {title[:44]}"
+        return app or title
 
 
 class MessageSection(QWidget):
@@ -739,7 +775,7 @@ class MarrowDashboard(QWidget):
     def _on_marrow_spoke(self, text: str, urgency: int):
         """Marrow proactively said something — show in message section."""
         self._message.update_message(text, urgency)
-        self._notif.show_message(text, urgency)
+        self._notif.show_message(text, urgency, cue=self._watching.cue())
         self._last_proactive_text = text
 
     def _on_mic_active(self, active: bool):

@@ -200,13 +200,13 @@ async def _run_reasoning(full_context: str) -> Optional[dict]:
 
     llm = get_client()
 
-    user_content = full_context
+    user_content = full_context[: config.REASONING_CONTEXT_CHAR_LIMIT]
 
     try:
         response = await llm.create(
             messages=[{"role": "user", "content": user_content}],
             system=DEEP_REASONING_PROMPT,
-            max_tokens=600,
+            max_tokens=config.REASONING_MAX_TOKENS,
             model_type="reasoning",
         )
         raw = response.text.strip()
@@ -256,10 +256,10 @@ async def _extract_world_model(
             messages=[
                 {
                     "role": "user",
-                    "content": f"{WORLD_MODEL_EXTRACTION_PROMPT}\n\nContext:\n{context_str}",
+                    "content": f"{WORLD_MODEL_EXTRACTION_PROMPT}\n\nContext:\n{context_str[:2200]}",
                 }
             ],
-            max_tokens=512,
+            max_tokens=config.WORLD_MODEL_MAX_TOKENS,
             model_type="scoring",
         )
         raw = response.text.strip()
@@ -433,9 +433,14 @@ async def _gate_context(full_context: str) -> bool:
 
     try:
         response = await llm.create(
-            messages=[{"role": "user", "content": full_context[:2200]}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": full_context[: config.GATE_CONTEXT_CHAR_LIMIT],
+                }
+            ],
             system=_GATE_PROMPT,
-            max_tokens=120,
+            max_tokens=config.GATE_MAX_TOKENS,
             model_type="scoring",
         )
         raw = response.text.strip()
@@ -472,7 +477,7 @@ async def _critic_approve(message: str, reasoning: str, context: str) -> bool:
     try:
         response = await llm.create(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=120,
+            max_tokens=config.CRITIC_MAX_TOKENS,
             model_type="scoring",
         )
         raw = response.text.strip()
@@ -505,8 +510,12 @@ async def reasoning_loop(
     log.info(f"Reasoning loop started (interval: {config.REASONING_INTERVAL}s)")
     await asyncio.sleep(config.REASONING_INTERVAL)
 
+    cycle_index = 0
+    cached_memory_context = ""
+
     while True:
         cycle_start = time.time()
+        cycle_index += 1
 
         try:
             context = db.get_recent_context(config.CONTEXT_WINDOW_SECONDS)
@@ -515,8 +524,13 @@ async def reasoning_loop(
 
             log.debug("Running reasoning cycle...")
 
-            # Semantic memory context (wiki + RetainDB search + recent obs)
-            memory_context = await _build_semantic_memory_context(context_str)
+            # Semantic memory context is expensive. Refresh every N cycles.
+            refresh_n = max(1, int(config.MEMORY_REFRESH_CYCLES))
+            if (cycle_index % refresh_n == 1) or not cached_memory_context:
+                cached_memory_context = await _build_semantic_memory_context(
+                    context_str
+                )
+            memory_context = cached_memory_context
 
             high_signal_context = build_high_signal_context()
 
@@ -643,7 +657,7 @@ async def _four_axis_score(message: str, reasoning: str, context: str) -> float:
 
         response = await llm.create(
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=150,
+            max_tokens=config.FOUR_AXIS_MAX_TOKENS,
             model_type="scoring",
         )
         raw = response.text.strip()

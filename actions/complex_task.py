@@ -18,8 +18,6 @@ import re
 from typing import Any, Optional
 from dataclasses import dataclass, field
 
-import anthropic
-
 import config
 from actions import executor, browser, web, file_tools, system
 
@@ -62,7 +60,7 @@ class ComplexTaskExecutor:
     def __init__(self):
         self.max_steps = 10
         self.max_retries = 2
-        self.planning_model = config.SCORING_MODEL  # Use faster model for planning
+        self.planning_model = "scoring"  # Use unified client model_type
 
     async def execute_complex_task(
         self,
@@ -127,7 +125,9 @@ class ComplexTaskExecutor:
 
     async def _create_plan(self, goal: str, context: str) -> list[PlanStep]:
         """Create a plan for achieving the goal."""
-        client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+        from brain.llm import get_client
+
+        llm = get_client()
 
         prompt = f"""Create a detailed plan to achieve this goal:
 
@@ -162,13 +162,13 @@ Output as JSON array:
 Only output the JSON array, nothing else."""
 
         try:
-            response = await client.messages.create(
-                model=self.planning_model,
-                max_tokens=1500,
+            response = await llm.create(
                 messages=[{"role": "user", "content": prompt}],
+                max_tokens=900,
+                model_type=self.planning_model,
             )
 
-            raw = response.content[0].text.strip()
+            raw = response.text.strip()
 
             # Extract JSON
             start = raw.find("[")
@@ -402,7 +402,9 @@ Only output the JSON array, nothing else."""
         context: str,
     ) -> bool:
         """Verify the goal was actually achieved."""
-        client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+        from brain.llm import get_client
+
+        llm = get_client()
 
         # Collect what was done
         actions_taken = []
@@ -426,13 +428,13 @@ Question: Did the actions taken actually achieve the goal? Answer YES or NO with
 If NO, what would need to be done differently?"""
 
         try:
-            response = await client.messages.create(
-                model=self.planning_model,
-                max_tokens=200,
+            response = await llm.create(
                 messages=[{"role": "user", "content": prompt}],
+                max_tokens=180,
+                model_type=self.planning_model,
             )
 
-            result = response.content[0].text.strip()
+            result = response.text.strip()
             log.info(f"Verification: {result[:100]}")
 
             return "YES" in result.upper() or "achieved" in result.lower()

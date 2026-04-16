@@ -364,7 +364,11 @@ MARROW_TOOLS = [
         "description": "Move window to position",
         "input_schema": {
             "type": "object",
-            "properties": {"title": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}},
+            "properties": {
+                "title": {"type": "string"},
+                "x": {"type": "integer"},
+                "y": {"type": "integer"},
+            },
             "required": ["title", "x", "y"],
         },
     },
@@ -373,7 +377,11 @@ MARROW_TOOLS = [
         "description": "Resize window",
         "input_schema": {
             "type": "object",
-            "properties": {"title": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"}},
+            "properties": {
+                "title": {"type": "string"},
+                "width": {"type": "integer"},
+                "height": {"type": "integer"},
+            },
             "required": ["title", "width", "height"],
         },
     },
@@ -438,7 +446,11 @@ MARROW_TOOLS = [
         "description": "Click at position",
         "input_schema": {
             "type": "object",
-            "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "button": {"type": "string"}},
+            "properties": {
+                "x": {"type": "integer"},
+                "y": {"type": "integer"},
+                "button": {"type": "string"},
+            },
         },
     },
     # Keyboard control
@@ -486,11 +498,16 @@ MARROW_TOOLS = [
         "description": "Take screenshot of region",
         "input_schema": {
             "type": "object",
-            "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"}},
+            "properties": {
+                "x": {"type": "integer"},
+                "y": {"type": "integer"},
+                "width": {"type": "integer"},
+                "height": {"type": "integer"},
+            },
             "required": ["x", "y", "width", "height"],
         },
     },
-# Subagent delegation
+    # Subagent delegation
     {
         "name": "delegate_task",
         "description": "Break a complex task into parallel sub-tasks using subagents.",
@@ -498,13 +515,19 @@ MARROW_TOOLS = [
             "type": "object",
             "properties": {
                 "task": {"type": "string", "description": "The task to delegate"},
-                "subagent_type": {"type": "string", "description": "Type: research, file_ops, code, general, quick"},
-                "max_subagents": {"type": "integer", "description": "Max subagents (default 3)"},
+                "subagent_type": {
+                    "type": "string",
+                    "description": "Type: research, file_ops, code, general, quick",
+                },
+                "max_subagents": {
+                    "type": "integer",
+                    "description": "Max subagents (default 3)",
+                },
             },
             "required": ["task"],
         },
     },
-# Memory (RetainDB)
+    # Memory (RetainDB)
     {
         "name": "memory_add",
         "description": "Store a fact or preference in persistent memory.",
@@ -512,7 +535,10 @@ MARROW_TOOLS = [
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "What to remember"},
-                "memory_type": {"type": "string", "description": "Type: factual, preference, instruction, event"},
+                "memory_type": {
+                    "type": "string",
+                    "description": "Type: factual, preference, instruction, event",
+                },
             },
             "required": ["content"],
         },
@@ -543,7 +569,10 @@ MARROW_TOOLS = [
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "Path to file to store"},
-                "scope": {"type": "string", "description": "Scope: USER, PROJECT, ORG, AGENT"},
+                "scope": {
+                    "type": "string",
+                    "description": "Scope: USER, PROJECT, ORG, AGENT",
+                },
             },
             "required": ["file_path"],
         },
@@ -785,7 +814,10 @@ MARROW_TOOLS = [
             "type": "object",
             "properties": {
                 "goal": {"type": "string", "description": "What you want to achieve"},
-                "verify": {"type": "boolean", "description": "Verify goal was achieved"},
+                "verify": {
+                    "type": "boolean",
+                    "description": "Verify goal was achieved",
+                },
             },
             "required": ["goal"],
         },
@@ -801,6 +833,89 @@ MARROW_TOOLS = [
             "required": ["goal"],
         },
     },
+    {
+        "name": "bootstrap_capability",
+        "description": (
+            "When a required app/tool/capability is missing, bootstrap it: detect, "
+            "attempt install, and scaffold local fallback workspace so execution can continue."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "requirement": {
+                    "type": "string",
+                    "description": "Capability requirement, e.g. 'obsidian-like notes'",
+                },
+                "install": {
+                    "type": "boolean",
+                    "description": "Attempt installation if possible",
+                },
+                "create_local_fallback": {
+                    "type": "boolean",
+                    "description": "Create local fallback workspace/scripts",
+                },
+            },
+            "required": ["requirement"],
+        },
+    },
+    {
+        "name": "create_local_adapter",
+        "description": (
+            "Create a persistent local adapter tool for repeated workflows. "
+            "Adapter is auto-registered in future runs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "requirement": {
+                    "type": "string",
+                    "description": "What capability/workflow this adapter should handle",
+                },
+                "adapter_name": {
+                    "type": "string",
+                    "description": "Stable adapter name",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What this adapter does",
+                },
+                "mode": {"type": "string", "description": "command or python"},
+                "command_template": {
+                    "type": "string",
+                    "description": "PowerShell command template with {task}/{context} placeholders",
+                },
+                "python_script": {
+                    "type": "string",
+                    "description": "Full Python script text if mode=python",
+                },
+                "input_schema_json": {
+                    "type": "string",
+                    "description": "Optional JSON schema string for adapter input",
+                },
+            },
+            "required": ["requirement", "adapter_name"],
+        },
+    },
+    {
+        "name": "list_local_adapters",
+        "description": "List local adapter tools that are auto-registered.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "verify_local_adapter",
+        "description": "Run a smoke test for a local adapter and save pass/fail status.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "adapter_name": {"type": "string", "description": "Adapter name"},
+                "sample_input_json": {
+                    "type": "string",
+                    "description": 'JSON object string passed to adapter, e.g. {"task":"daily log"}',
+                },
+            },
+            "required": ["adapter_name"],
+        },
+    },
     # Background processes
     {
         "name": "run_background",
@@ -809,7 +924,10 @@ MARROW_TOOLS = [
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Command to run"},
-                "process_id": {"type": "string", "description": "Optional ID for this process"},
+                "process_id": {
+                    "type": "string",
+                    "description": "Optional ID for this process",
+                },
                 "notify": {"type": "boolean", "description": "Notify when complete"},
             },
             "required": ["command"],
@@ -843,7 +961,10 @@ MARROW_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: running, completed, failed"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: running, completed, failed",
+                },
             },
         },
     },
@@ -870,9 +991,18 @@ MARROW_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "Toast title (short, e.g. 'Marrow' or 'Email Summary')"},
-                "message": {"type": "string", "description": "The notification body text (max 200 chars works best)"},
-                "urgency": {"type": "integer", "description": "1=critical (red), 2=high (orange), 3=medium (amber), 4=info (blue), 5=low (gray)"},
+                "title": {
+                    "type": "string",
+                    "description": "Toast title (short, e.g. 'Marrow' or 'Email Summary')",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The notification body text (max 200 chars works best)",
+                },
+                "urgency": {
+                    "type": "integer",
+                    "description": "1=critical (red), 2=high (orange), 3=medium (amber), 4=info (blue), 5=low (gray)",
+                },
             },
             "required": ["title", "message"],
         },
@@ -888,9 +1018,18 @@ MARROW_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "hours": {"type": "integer", "description": "Look back N hours (default 24)"},
-                "max_count": {"type": "integer", "description": "Max emails to return (default 10)"},
-                "unread_only": {"type": "boolean", "description": "Only unread emails (default true)"},
+                "hours": {
+                    "type": "integer",
+                    "description": "Look back N hours (default 24)",
+                },
+                "max_count": {
+                    "type": "integer",
+                    "description": "Max emails to return (default 10)",
+                },
+                "unread_only": {
+                    "type": "boolean",
+                    "description": "Only unread emails (default true)",
+                },
             },
         },
     },
@@ -904,7 +1043,10 @@ MARROW_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "days": {"type": "integer", "description": "Days ahead to look (default 1 = today only)"},
+                "days": {
+                    "type": "integer",
+                    "description": "Days ahead to look (default 1 = today only)",
+                },
             },
         },
     },
@@ -918,11 +1060,14 @@ def _terminal_exec(command: str, timeout: int = 30) -> str:
     """Run a PowerShell command. Returns stdout+stderr, capped at 3000 chars."""
     # Check approval first
     from actions import approval
-    should_proceed, reason = approval.check_approval(command, "run_command", {"command": command})
+
+    should_proceed, reason = approval.check_approval(
+        command, "run_command", {"command": command}
+    )
     if not should_proceed:
         log.warning(f"Command blocked by approval: {reason}")
         return f"[BLOCKED] {reason}"
-    
+
     try:
         # Wrap in PowerShell for Windows consistency
         ps_cmd = ["powershell", "-NoProfile", "-Command", command]
@@ -1000,13 +1145,13 @@ def _get_emails(hours: int = 24, max_count: int = 10, unread_only: bool = True) 
     """
     # Try Outlook COM via PowerShell (works if Outlook is installed)
     unread_filter = "AND [Unread]=True" if unread_only else ""
-    cutoff_date   = f"AND [ReceivedTime] > '{__import__('datetime').datetime.now() - __import__('datetime').timedelta(hours=hours)}'"
+    cutoff_date = f"AND [ReceivedTime] > '{__import__('datetime').datetime.now() - __import__('datetime').timedelta(hours=hours)}'"
     ps_script = f"""
 try {{
     $outlook = New-Object -ComObject Outlook.Application
     $ns = $outlook.GetNamespace("MAPI")
     $inbox = $ns.GetDefaultFolder(6)  # 6 = olFolderInbox
-    $filter = "[ReceivedTime] > '{(__import__('datetime').datetime.now() - __import__('datetime').timedelta(hours=hours)).strftime('%m/%d/%Y %H:%M')}'"
+    $filter = "[ReceivedTime] > '{(__import__("datetime").datetime.now() - __import__("datetime").timedelta(hours=hours)).strftime("%m/%d/%Y %H:%M")}'"
     $items = $inbox.Items.Restrict($filter)
     $items.Sort("[ReceivedTime]", $true)
     $count = 0
@@ -1017,7 +1162,7 @@ try {{
         $results += "[$($item.ReceivedTime.ToString('HH:mm'))] $($item.SenderName): $($item.Subject)"
         $count++
     }}
-    if ($results.Count -eq 0) {{ Write-Output "No {'unread ' if unread_only else ''}emails in the last {hours}h" }}
+    if ($results.Count -eq 0) {{ Write-Output "No {"unread " if unread_only else ""}emails in the last {hours}h" }}
     else {{ $results | ForEach-Object {{ Write-Output $_ }} }}
 }} catch {{
     Write-Output "OUTLOOK_UNAVAILABLE: $_"
@@ -1032,7 +1177,11 @@ try {{
             f"himalaya envelope list --max-width 80 --limit {max_count}",
             timeout=10,
         )
-        if himalaya and "[error]" not in himalaya.lower() and "not recognized" not in himalaya.lower():
+        if (
+            himalaya
+            and "[error]" not in himalaya.lower()
+            and "not recognized" not in himalaya.lower()
+        ):
             return f"Emails (himalaya):\n{himalaya}"
 
         # Nothing available — give instructions
@@ -1050,8 +1199,11 @@ def _get_calendar(days: int = 1) -> str:
     Fetch calendar events via PowerShell + Outlook COM.
     Falls back to instructions if Outlook unavailable.
     """
-    end_date = (__import__('datetime').datetime.now() + __import__('datetime').timedelta(days=days)).strftime('%m/%d/%Y')
-    today    = __import__('datetime').datetime.now().strftime('%m/%d/%Y')
+    end_date = (
+        __import__("datetime").datetime.now()
+        + __import__("datetime").timedelta(days=days)
+    ).strftime("%m/%d/%Y")
+    today = __import__("datetime").datetime.now().strftime("%m/%d/%Y")
 
     ps_script = f"""
 try {{
@@ -1101,13 +1253,25 @@ def _handle_tool_call(tool_name: str, tool_input: dict, context: str = "") -> st
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(_async_handle_tool_call(tool_name, tool_input, context))
+        return loop.run_until_complete(
+            _async_handle_tool_call(tool_name, tool_input, context)
+        )
     finally:
         loop.close()
 
 
-async def _async_handle_tool_call(tool_name: str, tool_input: dict, context: str = "") -> str:
+async def _async_handle_tool_call(
+    tool_name: str, tool_input: dict, context: str = ""
+) -> str:
     from actions import browser, web, file_tools, system
+    from actions import adapters as adapters_mod
+
+    # Dynamic adapter tools (adapter_<name>)
+    adapter_result = adapters_mod.execute_adapter_tool(
+        tool_name, tool_input, _terminal_exec
+    )
+    if adapter_result is not None:
+        return adapter_result
 
     if tool_name == "run_command":
         timeout = tool_input.get("timeout", 30)
@@ -1224,7 +1388,9 @@ async def _async_handle_tool_call(tool_name: str, tool_input: dict, context: str
         task = tool_input["task"]
         subagent_type = tool_input.get("subagent_type", "general")
         max_agents = tool_input.get("max_subagents", 3)
-        return await delegate_mod.delegate_task(task, subagent_type, max_agents, context)
+        return await delegate_mod.delegate_task(
+            task, subagent_type, max_agents, context
+        )
 
     # Memory
     elif tool_name == "memory_add":
@@ -1375,60 +1541,109 @@ async def _async_handle_tool_call(tool_name: str, tool_input: dict, context: str
     # Complex task execution
     elif tool_name == "execute_complex":
         from actions import complex_task as ct_mod
-        
+
         goal = tool_input["goal"]
         verify = tool_input.get("verify", True)
         return await ct_mod.execute_complex(goal, context, verify)
 
     elif tool_name == "plan_task":
         from actions import complex_task as ct_mod
-        
+
         return await ct_mod.plan_task(tool_input["goal"], context)
+
+    elif tool_name == "bootstrap_capability":
+        from actions import bootstrap as bootstrap_mod
+
+        return await bootstrap_mod.bootstrap_capability(
+            requirement=tool_input["requirement"],
+            install=tool_input.get("install", True),
+            create_local_fallback=tool_input.get("create_local_fallback", True),
+            run_command=_terminal_exec,
+        )
+
+    elif tool_name == "create_local_adapter":
+        return adapters_mod.create_local_adapter(
+            requirement=tool_input["requirement"],
+            adapter_name=tool_input["adapter_name"],
+            description=tool_input.get("description", ""),
+            mode=tool_input.get("mode", "command"),
+            command_template=tool_input.get("command_template", ""),
+            python_script=tool_input.get("python_script", ""),
+            input_schema_json=tool_input.get("input_schema_json", ""),
+        )
+
+    elif tool_name == "list_local_adapters":
+        rows = adapters_mod.list_adapters()
+        if not rows:
+            return "No local adapters registered."
+        lines = ["## Local Adapters"]
+        for r in rows[:30]:
+            runs = int(r.get("total_runs", 0))
+            succ = int(r.get("success_runs", 0))
+            trust = (succ + 1.0) / (runs + 2.0)
+            lines.append(
+                f"- {r.get('name', 'adapter')} ({r.get('mode', 'command')}, trust {trust:.2f}, runs {runs}): {r.get('description', '')[:90]}"
+            )
+        return "\n".join(lines)
+
+    elif tool_name == "verify_local_adapter":
+        return adapters_mod.verify_local_adapter(
+            adapter_name=tool_input["adapter_name"],
+            sample_input_json=tool_input.get("sample_input_json", ""),
+            run_command=_terminal_exec,
+        )
 
     # Background processes
     elif tool_name == "run_background":
         from actions import process_registry as proc_mod
-        
+
         command = tool_input["command"]
         process_id = tool_input.get("process_id")
         notify = tool_input.get("notify", True)
-        
+
         return await proc_mod.run_background(command, process_id, notify)
 
     elif tool_name == "get_background_status":
         from actions import process_registry as proc_mod
-        
+
         return proc_mod.get_background_status(tool_input["process_id"])
 
     elif tool_name == "cancel_background":
         from actions import process_registry as proc_mod
-        
-        return "Cancelled" if proc_mod.cancel_background(tool_input["process_id"]) else "Not found or not running"
+
+        return (
+            "Cancelled"
+            if proc_mod.cancel_background(tool_input["process_id"])
+            else "Not found or not running"
+        )
 
     elif tool_name == "list_background":
         from actions import process_registry as proc_mod
-        
+
         status = tool_input.get("status")
         procs = proc_mod.get_process_registry().list_processes()
-        
+
         if not procs:
             return "No background processes."
-        
+
         lines = ["## Background Processes\n"]
         for p in procs:
             if status and p.status.value != status:
                 continue
-            lines.append(f"- {p.process_id}: {p.status.value} (command: {p.command[:60]})")
-        
+            lines.append(
+                f"- {p.process_id}: {p.status.value} (command: {p.command[:60]})"
+            )
+
         return "\n".join(lines)
 
     # User-facing toast notification
     elif tool_name == "notify_user":
-        title   = tool_input.get("title", "Marrow")
+        title = tool_input.get("title", "Marrow")
         message = tool_input.get("message", "")
         urgency = int(tool_input.get("urgency", 3))
         try:
             from ui.bridge import get_bridge
+
             get_bridge().toast_requested.emit(title, message, urgency)
             log.info(f"[TOAST] {title}: {message[:80]}")
         except Exception as e:
@@ -1437,9 +1652,9 @@ async def _async_handle_tool_call(tool_name: str, tool_input: dict, context: str
 
     # Email retrieval
     elif tool_name == "get_emails":
-        hours     = int(tool_input.get("hours", 24))
+        hours = int(tool_input.get("hours", 24))
         max_count = int(tool_input.get("max_count", 10))
-        unread    = tool_input.get("unread_only", True)
+        unread = tool_input.get("unread_only", True)
         return _get_emails(hours, max_count, unread)
 
     # Calendar retrieval
@@ -1458,68 +1673,89 @@ async def _async_handle_tool_call(tool_name: str, tool_input: dict, context: str
     # Window management
     elif tool_name == "window_list":
         from actions import app_control as app_mod
+
         return await app_mod.window_list()
     elif tool_name == "window_focus":
         from actions import app_control as app_mod
+
         return await app_mod.window_focus(tool_input["title"])
     elif tool_name == "window_move":
         from actions import app_control as app_mod
-        return await app_mod.window_move(tool_input["title"], tool_input["x"], tool_input["y"])
+
+        return await app_mod.window_move(
+            tool_input["title"], tool_input["x"], tool_input["y"]
+        )
     elif tool_name == "window_resize":
         from actions import app_control as app_mod
-        return await app_mod.window_resize(tool_input["title"], tool_input["width"], tool_input["height"])
+
+        return await app_mod.window_resize(
+            tool_input["title"], tool_input["width"], tool_input["height"]
+        )
     elif tool_name == "window_minimize":
         from actions import app_control as app_mod
+
         return await app_mod.window_minimize(tool_input["title"])
     elif tool_name == "window_maximize":
         from actions import app_control as app_mod
+
         return await app_mod.window_maximize(tool_input["title"])
     elif tool_name == "window_close":
         from actions import app_control as app_mod
+
         return await app_mod.window_close(tool_input["title"])
-    
+
     # Application control
     elif tool_name == "app_launch":
         from actions import app_control as app_mod
-        return await app_mod.app_launch(tool_input["path"], tool_input.get("arguments", ""))
+
+        return await app_mod.app_launch(
+            tool_input["path"], tool_input.get("arguments", "")
+        )
     elif tool_name == "app_close":
         from actions import app_control as app_mod
+
         return await app_mod.app_close(tool_input["name"])
-    
+
     # Mouse control
     elif tool_name == "mouse_move":
         from actions import app_control as app_mod
+
         return await app_mod.mouse_move(tool_input["x"], tool_input["y"])
     elif tool_name == "mouse_click":
         from actions import app_control as app_mod
+
         return await app_mod.mouse_click(
-            tool_input.get("x"), 
-            tool_input.get("y"), 
-            tool_input.get("button", "left")
+            tool_input.get("x"), tool_input.get("y"), tool_input.get("button", "left")
         )
-    
+
     # Keyboard control
     elif tool_name == "keyboard_type":
         from actions import app_control as app_mod
+
         return await app_mod.keyboard_type(tool_input["text"])
     elif tool_name == "keyboard_hotkey":
         from actions import app_control as app_mod
+
         return await app_mod.keyboard_hotkey(tool_input["keys"])
-    
+
     # Clipboard (redundant with system.py but here for completeness)
     elif tool_name == "clipboard_get":
         from actions import app_control as app_mod
+
         return await app_mod.clipboard_get()
     elif tool_name == "clipboard_set":
         from actions import app_control as app_mod
+
         return await app_mod.clipboard_set(tool_input["text"])
-    
+
     # Screenshot
     elif tool_name == "screenshot":
         from actions import app_control as app_mod
+
         return await app_mod.screenshot()
     elif tool_name == "screenshot_region":
         from actions import app_control as app_mod
+
         return await app_mod.screenshot_region(
             tool_input["x"], tool_input["y"], tool_input["width"], tool_input["height"]
         )
@@ -1538,6 +1774,7 @@ async def execute_action(task: str, context: str = "") -> str:
     """
     from brain.llm import get_client
     from actions import memory as memory_mod
+    from actions import adapters as adapters_mod
 
     llm = get_client()
 
@@ -1550,11 +1787,23 @@ async def execute_action(task: str, context: str = "") -> str:
     except Exception:
         pass
 
+    recommended_adapter = adapters_mod.recommend_adapter_tool(
+        task,
+        min_trust=float(config.ADAPTER_MIN_TRUST_TO_RECOMMEND),
+    )
+
+    adapter_hint = (
+        f"\n\nPreferred adapter for this task: {recommended_adapter}. Use it first unless clearly unsuitable."
+        if recommended_adapter
+        else ""
+    )
+
     user_content = (
         f"{task}\n\nContext:\n{context}{memory_context}"
         if context
         else f"{task}{memory_context}"
     )
+    user_content += adapter_hint
 
     log.info(f"Executing action: {task[:80]}")
     asyncio.create_task(
@@ -1574,9 +1823,11 @@ async def execute_action(task: str, context: str = "") -> str:
             )
         )
 
+    toolset = MARROW_TOOLS + adapters_mod.get_adapter_tools()
+
     final_text = await llm.create_with_tools(
         messages=[{"role": "user", "content": user_content}],
-        tools=MARROW_TOOLS,
+        tools=toolset,
         tool_handler=_tool_handler,
         system=ACTION_SYSTEM_PROMPT,
         max_tokens=1024,
@@ -1585,7 +1836,56 @@ async def execute_action(task: str, context: str = "") -> str:
         on_tool_call=_on_tool_call,
     )
 
+    # If base loop returns weak/incomplete answer, auto-escalate to complex planner.
+    if config.AUTO_COMPLEX_ESCALATION:
+        low = (final_text or "").lower()
+        incomplete = (
+            (not final_text)
+            or "max iterations reached" in low
+            or "[unknown tool" in low
+            or "[error" in low
+            or "unavailable" in low
+        )
+        if incomplete:
+            try:
+                from actions import complex_task as ct_mod
+
+                plan_summary = await ct_mod.execute_complex(
+                    goal=task,
+                    context=context,
+                    verify=False,
+                )
+                final_text = (
+                    (final_text or "") + "\n\n[Escalated execution]\n" + plan_summary
+                )
+            except Exception as e:
+                log.debug(f"Auto complex escalation skipped: {e}")
+
+    # Auto-learn: suggest adapter for repeated workflows
+    if config.ADAPTER_AUTO_LEARN:
+        try:
+            tip = adapters_mod.maybe_suggest_adapter(
+                task,
+                threshold=max(2, int(config.ADAPTER_SUGGEST_THRESHOLD)),
+            )
+            if tip:
+                final_text = (final_text or "Done.") + "\n\n" + tip
+                try:
+                    from ui.bridge import get_bridge
+
+                    get_bridge().toast_requested.emit(
+                        config.MARROW_NAME,
+                        "Repeated workflow detected. I can create a reusable local adapter.",
+                        4,
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            log.debug(f"Adapter auto-learn skipped: {e}")
+
     asyncio.create_task(
-        memory_mod.memory_record_conversation("assistant", final_text, "action_response")
+        memory_mod.memory_record_conversation(
+            "assistant", final_text, "action_response"
+        )
     )
     return final_text or "Done."

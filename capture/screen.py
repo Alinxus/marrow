@@ -40,6 +40,7 @@ _last_app: str = ""
 _last_title: str = ""
 _last_focused: str = ""
 _last_hash: str = ""
+_last_vision_ts: float = 0.0
 
 
 def _get_active_window() -> tuple[str, str, str]:
@@ -165,7 +166,7 @@ async def _extract_text_with_vision(
             client = llm.get_raw_anthropic()
             msg = await client.messages.create(
                 model=config.VISION_MODEL,
-                max_tokens=700,
+                max_tokens=config.VISION_MAX_TOKENS,
                 messages=[
                     {
                         "role": "user",
@@ -202,7 +203,7 @@ async def _extract_text_with_vision(
                     }
                 ],
                 model_type="vision",
-                max_completion_tokens=700,
+                max_completion_tokens=config.VISION_MAX_TOKENS,
             )
             text = resp.text.strip()
             return text or _local_visual_summary(
@@ -216,7 +217,7 @@ async def _extract_text_with_vision(
 
 async def screen_capture_loop() -> None:
     """Main screen capture loop. Runs forever. No external client needed."""
-    global _last_app, _last_title, _last_focused, _last_hash
+    global _last_app, _last_title, _last_focused, _last_hash, _last_vision_ts
 
     log.info("Screen capture loop started")
 
@@ -257,12 +258,23 @@ async def screen_capture_loop() -> None:
                     pass
 
                 image_path = _save_screenshot(img, ts)
-                ocr_text = await _extract_text_with_vision(
-                    b64,
-                    app_name=app_name,
-                    window_title=window_title,
-                    focused_context=focused_context,
+                now = time.time()
+                use_vision = (now - _last_vision_ts) >= max(
+                    config.SCREENSHOT_INTERVAL, config.SCREEN_VISION_INTERVAL_SECONDS
                 )
+
+                if use_vision:
+                    ocr_text = await _extract_text_with_vision(
+                        b64,
+                        app_name=app_name,
+                        window_title=window_title,
+                        focused_context=focused_context,
+                    )
+                    _last_vision_ts = now
+                else:
+                    ocr_text = _local_visual_summary(
+                        app_name, window_title, focused_context
+                    )
 
                 db.insert_screenshot(
                     ts=ts,
