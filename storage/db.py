@@ -169,6 +169,13 @@ def init_db() -> None:
             FOREIGN KEY (mission_id) REFERENCES missions(id)
         );
 
+        CREATE TABLE IF NOT EXISTS runtime_components (
+            component TEXT PRIMARY KEY,
+            ts        REAL NOT NULL,
+            status    TEXT NOT NULL,
+            detail    TEXT
+        );
+
         -- FTS5 trigram indexes for fast search
         CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(
             content, type, source,
@@ -204,6 +211,7 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_claim_ts          ON claim_events(ts);
         CREATE INDEX IF NOT EXISTS idx_missions_status   ON missions(status);
         CREATE INDEX IF NOT EXISTS idx_mission_steps_mid ON mission_steps(mission_id, step_index);
+        CREATE INDEX IF NOT EXISTS idx_runtime_ts        ON runtime_components(ts);
     """)
     conn.commit()
 
@@ -317,6 +325,38 @@ def get_last_screenshot_age_seconds() -> float | None:
     return max(0.0, time.time() - float(max_ts))
 
 
+def upsert_runtime_component(component: str, status: str, detail: str = "") -> None:
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO runtime_components (component, ts, status, detail)
+           VALUES (?,?,?,?)
+           ON CONFLICT(component) DO UPDATE SET
+             ts=excluded.ts,
+             status=excluded.status,
+             detail=excluded.detail""",
+        (component, time.time(), status, detail[:400]),
+    )
+    conn.commit()
+
+
+def get_runtime_snapshot() -> dict[str, dict]:
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT component, ts, status, detail FROM runtime_components ORDER BY component ASC"
+    ).fetchall()
+    out: dict[str, dict] = {}
+    now = time.time()
+    for r in rows:
+        ts = float(r["ts"] or 0)
+        out[r["component"]] = {
+            "status": r["status"],
+            "detail": r["detail"] or "",
+            "ts": ts,
+            "age_seconds": max(0.0, now - ts),
+        }
+    return out
+
+
 def get_recent_interruptions(window_seconds: int) -> list:
     conn = _connect()
     cutoff = (datetime.utcnow() - timedelta(seconds=window_seconds)).timestamp()
@@ -325,6 +365,18 @@ def get_recent_interruptions(window_seconds: int) -> list:
         (cutoff,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_last_interruption_age_seconds() -> float | None:
+    """Seconds since most recent interruption row, or None if none."""
+    conn = _connect()
+    row = conn.execute("SELECT MAX(ts) AS max_ts FROM interruptions").fetchone()
+    if not row:
+        return None
+    max_ts = row["max_ts"]
+    if max_ts is None:
+        return None
+    return max(0.0, time.time() - float(max_ts))
 
 
 def count_interruptions_since(ts_cutoff: float) -> int:

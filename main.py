@@ -313,6 +313,27 @@ def _handle_slash_command(text: str) -> str | None:
         except Exception as e:
             lines.append(f"- LLM runtime: unavailable ({e})")
 
+        try:
+            screen_age = db.get_last_screenshot_age_seconds()
+            if screen_age is None:
+                lines.append("- Screen capture freshness: no screenshot rows yet")
+            else:
+                lines.append(f"- Screen capture freshness: {int(screen_age)}s ago")
+        except Exception as e:
+            lines.append(f"- Screen capture freshness: unavailable ({e})")
+
+        try:
+            snap = db.get_runtime_snapshot()
+            if snap:
+                lines.append("- Runtime components:")
+                for name in sorted(snap.keys()):
+                    comp = snap[name]
+                    lines.append(
+                        f"  - {name}: {comp.get('status')} ({int(comp.get('age_seconds', 0))}s ago) {comp.get('detail', '')[:90]}"
+                    )
+        except Exception as e:
+            lines.append(f"- Runtime components: unavailable ({e})")
+
         lines.append("")
         lines.append(capability_summary_text())
         lines.append("")
@@ -552,6 +573,106 @@ async def _main_async() -> None:
     set_confirm_callback(_approval_callback)
 
     # ── On-demand activation ──────────────────────────────────────────────
+    def _is_runtime_status_question(text: str) -> bool:
+        low = (text or "").lower()
+        patterns = (
+            "are you watching",
+            "are you observing",
+            "are you listening",
+            "continuous",
+            "continuously",
+            "turn based",
+            "turn-based",
+            "proactive by default",
+            "always watching",
+        )
+        return any(p in low for p in patterns)
+
+    def _runtime_status_reply() -> str:
+        screen_age = db.get_last_screenshot_age_seconds()
+        last_interrupt_age = db.get_last_interruption_age_seconds()
+        snap = db.get_runtime_snapshot()
+        audio = snap.get("audio_capture", {})
+
+        if screen_age is None:
+            screen_line = "I am configured for continuous screen observation, but I don't have a screenshot sample yet."
+        elif screen_age <= 60:
+            screen_line = "Yes - I am continuously watching your screen right now."
+        elif screen_age <= 180:
+            screen_line = "I am configured to watch continuously, but screen capture is delayed right now."
+        else:
+            screen_line = "I am configured to watch continuously, but screen capture is stale right now, so context may lag."
+
+        audio_status = audio.get("status")
+        if audio_status:
+            audio_line = f"Audio capture status is {audio_status}."
+        else:
+            audio_line = (
+                "Audio capture is enabled by config."
+                if config.AUDIO_ENABLED
+                else "Audio capture is disabled by config."
+            )
+
+        if last_interrupt_age is None:
+            proactive_line = (
+                "No proactive interruption has been emitted yet in this run."
+            )
+        else:
+            proactive_line = f"Last proactive interruption was {int(last_interrupt_age)} seconds ago."
+
+        return f"{screen_line} {audio_line} {proactive_line}"
+
+    def _compose_action_result_reply(action_result: str) -> str:
+        txt = (action_result or "").strip()
+        if not txt:
+            return "Done."
+        low = txt.lower()
+        if low.startswith("[error]") or "failed" in low:
+            return f"I tried it, but it failed: {txt[:180]}"
+        first_line = txt.splitlines()[0].strip()
+        if len(first_line) > 180:
+            first_line = first_line[:180] + "..."
+        return f"Done. {first_line}"
+
+    def _runtime_status_facts() -> str:
+        """Data-backed runtime facts to ground conversational responses."""
+        parts = [
+            "[Runtime status]",
+            "- Observation mode defaults to continuous background capture.",
+        ]
+
+        try:
+            age = db.get_last_screenshot_age_seconds()
+            if age is None:
+                parts.append("- Screen capture: no samples yet.")
+            elif age <= 60:
+                parts.append("- Screen capture: active.")
+            elif age <= 180:
+                parts.append("- Screen capture: degraded (older than 60s).")
+            else:
+                parts.append("- Screen capture: stale (>180s).")
+        except Exception:
+            parts.append("- Screen capture: unknown.")
+
+        try:
+            snap = db.get_runtime_snapshot()
+            a = snap.get("audio_capture")
+            if a:
+                parts.append(
+                    f"- Audio capture: {a.get('status', 'unknown')} ({a.get('detail', '')[:90]})."
+                )
+            else:
+                parts.append(
+                    f"- Audio capture: {'enabled' if config.AUDIO_ENABLED else 'disabled'} by config."
+                )
+        except Exception:
+            parts.append("- Audio capture: unknown.")
+
+        parts.append(
+            "- Never claim observe-on-demand-only or turn-based-only behavior unless runtime state above says capture is stale/disabled."
+        )
+        return "\n".join(parts)
+
     def _looks_like_action_request(text: str) -> bool:
         low = (text or "").strip().lower()
         if not low:
@@ -596,16 +717,18 @@ async def _main_async() -> None:
         try:
             ctx = db.get_recent_context(30)
             hint = _build_context_summary(ctx)
+            runtime_facts = _runtime_status_facts()
+
+            if _is_runtime_status_question(user_text):
+                reply = _runtime_status_reply()
+                _emit("message_spoken", reply, 4)
+                await speak(reply)
+                return
+
+            hint = f"{runtime_facts}\n\n{hint}" if hint else runtime_facts
             if _looks_like_action_request(user_text):
                 action_result = await execute_action(user_text, context=hint)
-                action_text = (action_result or "").strip()
-                if action_text:
-                    reply = await conversation.handle_turn(
-                        f"I executed the user's request. Result: {action_text[:500]}",
-                        context_hint=hint,
-                    )
-                else:
-                    reply = "Done."
+                reply = _compose_action_result_reply(action_result)
             else:
                 reply = await conversation.handle_turn(user_text, context_hint=hint)
             if reply:
@@ -869,6 +992,18 @@ async def _main_async() -> None:
         asyncio.create_task(run_startup_sequence(interrupt_engine))
     except Exception as e:
         log.warning(f"Startup sequence init failed: {e}")
+
+    # Live kickoff guidance — deterministic proactive instruction at startup.
+    try:
+        from brain.proactive import emit_live_kickoff
+
+        async def _kickoff_after_delay() -> None:
+            await asyncio.sleep(max(0, int(config.LIVE_KICKOFF_DELAY_SECONDS)))
+            await emit_live_kickoff()
+
+        asyncio.create_task(_kickoff_after_delay())
+    except Exception as e:
+        log.warning(f"Live kickoff init failed: {e}")
 
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for t in pending:

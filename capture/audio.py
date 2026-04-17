@@ -266,6 +266,14 @@ class AudioCaptureService:
             if not input_devices:
                 log.warning("No audio input device found — audio capture disabled")
                 try:
+                    from storage import db as _db
+
+                    _db.upsert_runtime_component(
+                        "audio_capture", "paused", "no audio input device"
+                    )
+                except Exception:
+                    pass
+                try:
                     from ui.bridge import get_bridge
 
                     get_bridge().mic_active.emit(False)
@@ -274,6 +282,14 @@ class AudioCaptureService:
                 return
         except Exception as e:
             log.warning(f"Audio device query failed: {e} — audio capture disabled")
+            try:
+                from storage import db as _db
+
+                _db.upsert_runtime_component(
+                    "audio_capture", "error", f"device query failed: {str(e)[:140]}"
+                )
+            except Exception:
+                pass
             try:
                 from ui.bridge import get_bridge
 
@@ -285,6 +301,14 @@ class AudioCaptureService:
         log.info(
             f"Audio capture loop started ({CHUNK_SECONDS}s chunks, {SAMPLE_RATE}Hz)"
         )
+        try:
+            from storage import db as _db
+
+            _db.upsert_runtime_component(
+                "audio_capture", "active", f"chunk={CHUNK_SECONDS}s sr={SAMPLE_RATE}"
+            )
+        except Exception:
+            pass
         _emit_audio_status(f"listening in {CHUNK_SECONDS}s chunks")
 
         # Signal UI that mic is active
@@ -504,6 +528,14 @@ class AudioCaptureService:
             return
 
         self._running = True
+        try:
+            from storage import db as _db
+
+            _db.upsert_runtime_component(
+                "audio_capture", "starting", "audio run entered"
+            )
+        except Exception:
+            pass
 
         if self._model is None and not self._deepgram_key:
             if not self._unavailable_notified:
@@ -520,6 +552,14 @@ class AudioCaptureService:
                     get_bridge().toast_requested.emit("Marrow", msg, 2)
                 except Exception:
                     pass
+            try:
+                from storage import db as _db
+
+                _db.upsert_runtime_component(
+                    "audio_capture", "unavailable", "audio backend unavailable"
+                )
+            except Exception:
+                pass
             # Keep task alive so supervisor doesn't restart-spam.
             while self._running:
                 await asyncio.sleep(60)
@@ -539,6 +579,14 @@ class AudioCaptureService:
                 log.error(
                     "No valid microphone input device detected. Audio capture paused."
                 )
+                try:
+                    from storage import db as _db
+
+                    _db.upsert_runtime_component(
+                        "audio_capture", "paused", "invalid microphone input device"
+                    )
+                except Exception:
+                    pass
                 while self._running:
                     await asyncio.sleep(60)
                 return

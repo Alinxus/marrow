@@ -132,6 +132,7 @@ _state = {
     "last_spoken_ts": 0.0,
     "last_signal_by_key": {},  # key -> ts
     "last_ambient_pulse_ts": 0.0,
+    "last_presence_ping_ts": 0.0,
 }
 
 # Thresholds
@@ -145,6 +146,7 @@ EOD_HOUR = 17  # 5 PM end-of-day nudge
 LOOP_INTERVAL = 60  # run checks every 60s
 DEFAULT_SIGNAL_DEDUP = 420  # suppress similar proactive signals for 7 minutes
 AMBIENT_PULSE_SECONDS = 180
+PRESENCE_PING_SECONDS = 240
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -200,7 +202,7 @@ def _get_window_title() -> str:
         ctx = db.get_recent_context(120)
         shots = ctx.get("screenshots", [])
         if shots:
-            return shots[-1].get("window_title", "")
+            return shots[0].get("window_title", "")
     except Exception:
         pass
     return ""
@@ -362,6 +364,91 @@ async def _surface_signal(
 
 def _marrow_name() -> str:
     return getattr(config, "MARROW_NAME", "Marrow")
+
+
+def _build_live_guidance(app: str, title: str, ocr_text: str = "") -> str:
+    app_l = (app or "").lower()
+    title_l = (title or "").lower()
+    text_l = (ocr_text or "").lower()
+
+    if any(
+        x in app_l
+        for x in ("code", "cursor", "pycharm", "intellij", "terminal", "powershell")
+    ):
+        return (
+            "You're live in build mode. Start with one concrete next step, run it immediately, "
+            "then I can verify the result and queue the follow-up."
+        )
+
+    if any(
+        x in app_l for x in ("slack", "discord", "teams", "mail", "outlook", "gmail")
+    ):
+        return (
+            "You're in comms. I recommend clearing the highest-impact reply first, "
+            "then I'll draft the next two responses to keep momentum."
+        )
+
+    if any(x in app_l for x in ("chrome", "edge", "brave", "firefox", "safari")):
+        if any(
+            x in title_l + " " + text_l
+            for x in ("youtube", "reddit", "x.com", "twitter")
+        ):
+            return (
+                "I can feel drift risk here. Give me the target outcome and I'll steer this session "
+                "to a concrete result instead of passive browsing."
+            )
+        return (
+            "You're in research mode. Tell me the decision you need to make, "
+            "and I'll extract only decision-grade facts and contradictions."
+        )
+
+    if any(
+        x in app_l for x in ("excel", "sheets", "numbers", "notion", "obsidian", "word")
+    ):
+        return (
+            "You're in planning/doc mode. I can help you structure the next three actions "
+            "and turn this into an executable checklist."
+        )
+
+    return "I'm live with full context. Give me your immediate objective and I'll drive the next step now."
+
+
+async def emit_live_kickoff() -> None:
+    """Deterministic startup proactive guidance right after Marrow is live."""
+    if not getattr(config, "LIVE_KICKOFF_ENABLED", True):
+        return
+
+    # Wait for capture loops to produce first context sample.
+    deadline = time.time() + 25
+    latest = None
+    while time.time() < deadline:
+        ctx = db.get_recent_context(120)
+        shots = ctx.get("screenshots", [])
+        if shots:
+            latest = shots[0]
+            break
+        await asyncio.sleep(1.0)
+
+    if not latest:
+        await _surface_signal(
+            "I'm live and ready. If you give me the goal, I'll start executing immediately.",
+            urgency=4,
+            speak_now=True,
+            kind="live_kickoff_no_context",
+        )
+        return
+
+    app = (latest.get("app_name") or "your current app").strip()
+    title = (latest.get("window_title") or "").strip()
+    ocr = (latest.get("ocr_text") or "").strip()
+
+    guidance = _build_live_guidance(app, title, ocr)
+    msg = f"I'm live and tracking {app}"
+    if title:
+        msg += f" on '{title[:52]}'"
+    msg += f". {guidance}"
+
+    await _surface_signal(msg, urgency=4, speak_now=True, kind="live_kickoff")
 
 
 # ─── Focus state ──────────────────────────────────────────────────────────────
@@ -802,6 +889,43 @@ async def _check_ambient_pulse() -> None:
     _state["last_ambient_pulse_ts"] = now
 
 
+async def _check_presence_ping() -> None:
+    """Deterministic non-LLM presence ping if Marrow has been too quiet."""
+    now = time.time()
+    if now - float(_state["last_presence_ping_ts"]) < PRESENCE_PING_SECONDS:
+        return
+
+    # Need fresh visual context.
+    age = db.get_last_screenshot_age_seconds()
+    if age is None or age > 90:
+        return
+
+    # If we've already spoken recently, skip.
+    last_interrupt_age = db.get_last_interruption_age_seconds()
+    if last_interrupt_age is not None and last_interrupt_age < PRESENCE_PING_SECONDS:
+        return
+
+    if _in_meeting_now() or _user_actively_speaking():
+        return
+
+    ctx = db.get_recent_context(120)
+    shots = ctx.get("screenshots", [])
+    if not shots:
+        return
+    latest = shots[0]
+    app = (latest.get("app_name") or "your current app").strip()
+    title = (latest.get("window_title") or "").strip()
+
+    msg = f"I'm with you and tracking {app}"
+    if title:
+        msg += f" on '{title[:52]}'"
+    msg += ". If you want, I can take the next step now."
+
+    # Force spoken ping (still goes through dedupe + gap logic).
+    await _surface_signal(msg, urgency=4, speak_now=True, kind="presence_ping")
+    _state["last_presence_ping_ts"] = now
+
+
 # ─── Main loop ────────────────────────────────────────────────────────────────
 
 
@@ -822,6 +946,7 @@ async def proactive_loop() -> None:
             await _check_calendar()
             await _check_end_of_day()
             await _check_ambient_pulse()
+            await _check_presence_ping()
         except Exception as e:
             log.debug(f"Proactive loop tick error: {e}")
 

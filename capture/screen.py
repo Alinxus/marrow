@@ -330,6 +330,10 @@ async def screen_capture_loop() -> None:
         _mac_screen_perm_warned
 
     log.info("Screen capture loop started")
+    try:
+        db.upsert_runtime_component("screen_capture", "starting", "loop boot")
+    except Exception:
+        pass
 
     with mss.mss() as sct:
         monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
@@ -421,6 +425,14 @@ async def screen_capture_loop() -> None:
                     content_hash=content_hash,
                 )
                 _last_persist_ts = ts
+                try:
+                    db.upsert_runtime_component(
+                        "screen_capture",
+                        "active",
+                        f"app={app_name[:40]} title={window_title[:80]}",
+                    )
+                except Exception:
+                    pass
 
                 # High-signal context extraction (contact pressure + claim events)
                 try:
@@ -449,6 +461,10 @@ async def screen_capture_loop() -> None:
 
             except Exception as e:
                 log.error(f"Screen capture error: {e}")
+                try:
+                    db.upsert_runtime_component("screen_capture", "error", str(e)[:220])
+                except Exception:
+                    pass
                 msg = str(e).lower()
                 if platform.system() == "Darwin" and not _mac_screen_perm_warned:
                     if (

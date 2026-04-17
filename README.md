@@ -151,6 +151,8 @@ On startup, Marrow enforces a default profile so it behaves conversationally and
 - `PROACTIVE_AUTO_SPEAK_MIN_URGENCY=2`
 - `PROACTIVE_SPEECH_MIN_GAP_SECONDS=30`
 - `PROACTIVE_SIGNAL_DEDUP_SECONDS=180`
+- `LIVE_KICKOFF_ENABLED=1`
+- `LIVE_KICKOFF_DELAY_SECONDS=12`
 
 This means you should not need to run `/proactive talkative` or `/conversation on` manually every launch.
 
@@ -231,6 +233,8 @@ Marrow uses a layered decision flow:
 4. Interrupt policy: meeting/flow/cooldown/dedup checks.
 
 The goal is high-signal interruptions without dead silence.
+
+Startup behavior includes a deterministic live kickoff guidance message (non-LLM), so Marrow gives immediate instruction/opinion once context is available.
 
 ## Troubleshooting
 
