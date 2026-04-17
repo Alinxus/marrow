@@ -1,42 +1,32 @@
 # Marrow
 
-Marrow is an ambient AI that runs on your laptop, watches screen/audio context, builds memory over time, and interrupts only when it has high-value insight.
+Marrow is an ambient desktop AI assistant with proactive behavior, conversational control, and tool execution.
 
-It is designed for proactive behavior (not just chat-response), local-first operation, and graceful degradation when APIs or devices are missing.
+It continuously ingests screen context, maintains memory, reasons in the background, and decides whether to speak, act, or stay silent.
 
-## What Marrow Does
+## Current State
 
-- Captures live desktop context (active app, window title, focused UI, screenshot OCR/vision)
-- Captures microphone audio and transcribes speech (Whisper local fallback, optional Deepgram)
-- Maintains durable memory (observations, actions, conversation traces, world model)
-- Runs a periodic reasoning loop to decide whether to:
-  - speak an insight
-  - execute an action
-  - stay silent
-- Applies interruption gating (gate -> generate -> critic, urgency, meeting detection, flow-state, cooldown, dedupe)
-- Supports long-horizon context awareness (patterns over days/weeks)
+- Built for "Jarvis-like" laptop operation: context awareness, proactive nudges, action execution, and persistent memory.
+- Runs with graceful degradation: if audio or cloud services are missing, core screen + reasoning loops still run.
+- Default runtime profile is now conversation-on + talkative proactive mode (applied at startup).
 
-## Key Architecture
+## What Marrow Can Do
 
-- `capture/`: screen + audio ingestion
-- `brain/`: reasoning, interrupt policy, world model, context awareness, LLM abstraction
-- `actions/`: tools/executor/delegation/approval
-- `storage/`: SQLite + FTS memory + history tables
-- `ui/`: floating panel bridge (PyQt6)
+- Watch desktop activity (app, title, focus hints, visual extraction).
+- Build memory across observations, conversations, actions, and long-horizon patterns.
+- Run a proactive reasoning loop with interruption policy and anti-spam dedupe.
+- Execute real tasks through tool use (shell, file, web, browser, reminders, mission orchestration, adapters).
+- Support conversational turns with follow-up memory and action-trigger handling.
 
-## LLM Provider Modes
+## Architecture
 
-Set `LLM_PROVIDER` in `.env`:
+- `capture/` - screen and audio ingestion pipelines.
+- `brain/` - reasoning, conversation, interruption policy, world model, proactive behavior.
+- `actions/` - tool executor, mission workflows, reminders, adapters, permissions, app control.
+- `storage/` - SQLite + FTS memory for screenshots, transcripts, observations, actions, and conversations.
+- `ui/` - orb/control bar, toast, overlay, approvals, settings bridge.
 
-- `auto` (recommended): OpenAI key -> Anthropic key -> local Ollama -> no-LLM mode
-- `openai`
-- `anthropic`
-- `ollama`
-- `none` (capture + memory only; no reasoning calls)
-
-Marrow now starts even if keys are missing.
-
-## Installation Guide
+## Quick Start
 
 ### Windows (PowerShell)
 
@@ -53,7 +43,7 @@ copy .env.example .env
 python main.py
 ```
 
-### macOS (zsh/bash)
+### macOS / Linux
 
 ```bash
 cd ~/Downloads/omi/marrow
@@ -68,202 +58,262 @@ cp .env.example .env
 python main.py
 ```
 
-Optional macOS audio dependencies:
+Optional on macOS:
 
 ```bash
 brew install portaudio ffmpeg
 ```
 
-## Dependency Conflicts (Important)
+## First 5-Minute Smoke Test
 
-If installs fail due to package conflicts, use this clean-room flow:
+Use this right after `python main.py` to verify the runtime quickly.
 
-1. Delete old virtual env (`.venv`) and recreate it.
-2. Upgrade packaging tools before installing (`pip`, `setuptools`, `wheel`).
-3. Install Marrow with `pip install -e .`.
+1. Confirm startup loops in logs:
+   - `Screen capture loop started`
+   - `Reasoning loop started`
+   - `Proactive intelligence loop started`
+2. Confirm provider/model:
+   - startup line with `Provider` and `Reasoning`
+   - `/models` returns expected provider/model values
+3. Confirm context capture:
+   - switch between 2-3 apps/tabs
+   - wait 30-90s for proactive pulse or insight
+4. Confirm conversation path:
+   - trigger wake/hotkey and ask one question
+   - expect one spoken + one visual surface (no duplicate)
+5. Confirm control commands:
+   - run `/doctor`
+   - run `/conversation status`
+   - run `/proactive status`
 
-If conflict persists, run:
+Expected outcome:
 
-```bash
-python -m pip check
-python -m pip freeze > pip-lock-debug.txt
+- Marrow should capture screen context continuously, reason periodically, and produce occasional proactive output without requiring manual `/conversation on` or `/proactive talkative`.
+
+## System Diagram
+
+```text
+             +-----------------------+
+             |   Screen / Audio I/O  |
+             +-----------+-----------+
+                         |
+                 capture/screen.py
+                 capture/audio.py
+                         |
+                         v
+               +--------------------+
+               | storage/db.py      |
+               | SQLite + FTS       |
+               +--------------------+
+                         |
+             +-----------+-----------+
+             |                       |
+             v                       v
+   brain/reasoning.py        brain/conversation.py
+   gate -> generate ->       low-latency turn loop
+   critic -> interrupt       follow-up memory
+             |                       |
+             +-----------+-----------+
+                         |
+                         v
+                 actions/executor.py
+                 tools / mission / adapters
+                         |
+                         v
+                      ui/bridge
+          orb/controlbar/toast/overlay/approvals
 ```
 
-Then reinstall from a fresh env again.
+## Runtime Model Providers
 
-Notes:
+Set `LLM_PROVIDER` in env:
 
-- Marrow supports missing optional services (cloud keys, audio, etc.) and should still boot.
-- For local-only runs, set `LLM_PROVIDER=ollama` (or `none` for capture-only mode).
-- On Windows, if mic device errors appear, set `AUDIO_INPUT_DEVICE` explicitly or `AUDIO_ENABLED=0`.
+- `auto` (recommended): OpenAI -> Anthropic -> Ollama -> none.
+- `openai`
+- `anthropic`
+- `ollama`
+- `none` (capture/memory only)
 
-## Recommended `.env` Baseline
+Marrow boots even without keys.
+
+## Default Behavior Profile (Important)
+
+On startup, Marrow enforces a default profile so it behaves conversationally and proactively without manual setup:
+
+- `CONVERSATION_ENABLED=1`
+- `CONVERSATION_RESPONSE_STYLE=detailed`
+- `CONVERSATION_MODEL_TYPE=reasoning`
+- `CONVERSATION_MODE_TIMEOUT_SECONDS=120`
+- `CONVERSATION_MAX_TURNS=20`
+- `CONVERSATION_MAX_TOKENS=420`
+- `PROACTIVE_FREQUENCY=4`
+- `PROACTIVE_SPEECH_MIN_URGENCY=2`
+- `PROACTIVE_AUTO_SPEAK_MIN_URGENCY=2`
+- `PROACTIVE_SPEECH_MIN_GAP_SECONDS=30`
+- `PROACTIVE_SIGNAL_DEDUP_SECONDS=180`
+
+This means you should not need to run `/proactive talkative` or `/conversation on` manually every launch.
+
+## Recommended `.env`
 
 ```env
 LLM_PROVIDER=auto
 
-# Optional keys
+# Optional cloud keys
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 
-# Local models (Ollama)
+# Local models
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_REASONING_MODEL=llama3.2
 OLLAMA_SCORING_MODEL=llama3.2
 OLLAMA_VISION_MODEL=llava
 
-# Audio
+# Audio input
 AUDIO_ENABLED=1
 AUDIO_INPUT_DEVICE=
 WAKE_WORD_ENABLED=1
+AUDIO_STT_BACKEND=auto
 WHISPER_MODEL=small
 
-# Screen vision quality
-SCREEN_VISION_MAX_SIZE=1920
-SCREEN_VISION_JPEG_QUALITY=85
+# Conversation
+CONVERSATION_ENABLED=1
+CONVERSATION_MODE_TIMEOUT_SECONDS=120
+CONVERSATION_MAX_TURNS=20
+CONVERSATION_MAX_TOKENS=420
+CONVERSATION_MODEL_TYPE=reasoning
+CONVERSATION_RESPONSE_STYLE=detailed
 
-# Timing
-REASONING_INTERVAL=30
-INTERRUPT_COOLDOWN=90
+# Screen / reasoning cadence
 SCREENSHOT_INTERVAL=3
+REASONING_INTERVAL=30
 CONTEXT_WINDOW_SECONDS=120
 
 # Proactive policy
 PROACTIVE_FREQUENCY=4
+PROACTIVE_SPEECH_MIN_URGENCY=2
+PROACTIVE_AUTO_SPEAK_MIN_URGENCY=2
+PROACTIVE_SPEECH_MIN_GAP_SECONDS=30
+PROACTIVE_SIGNAL_DEDUP_SECONDS=180
 
 # UI mode
 UI_MODE=orb
 CONTROL_BAR_AUTO_SHOW=0
 ```
 
-`UI_MODE=orb` gives the small low-distraction orb with optional dashboard.
-Set `UI_MODE=controlbar` if you want the unified floating bar.
+## Slash Commands
 
-## Proactive Decision Pipeline
+From chat/control bar:
 
-Marrow uses a three-stage interruption policy inspired by Omi's production behavior:
+- `/help`
+- `/models`
+- `/provider <auto|openai|anthropic|ollama|none>`
+- `/model <reasoning|scoring|vision> <name>`
+- `/capabilities`
+- `/selfcheck`
+- `/doctor`
+- `/chatstyle <short|balanced|detailed|status>`
+- `/proactive <quiet|normal|talkative|status>`
+- `/conversation <on|off|status>`
+- `/mission <start|pause|resume|rollback|status> [goal]`
+- `/swarm <run|status> [goal]`
+- `/audio <on|off|status>`
+- `/hotkey <on|off>`
+- `/wakeword <on|off>`
 
-1. Gate: score whether this moment is worth interrupting at all.
+## Behavioral Pipeline
+
+Marrow uses a layered decision flow:
+
+1. Gate: decide if interruption is worth it now.
 2. Generate: produce candidate speak/action output.
-3. Critic: final quality check before surfacing.
+3. Critic: validate quality/timing.
+4. Interrupt policy: meeting/flow/cooldown/dedup checks.
 
-This reduces spammy interruptions and pushes Marrow toward high-signal moments.
+The goal is high-signal interruptions without dead silence.
 
-## Vision Quality Notes
+## Troubleshooting
 
-If screen understanding feels weak:
+### It starts, but stays too silent
 
-- Increase `SCREEN_VISION_MAX_SIZE` (e.g. `2240`)
-- Increase `SCREEN_VISION_JPEG_QUALITY` (e.g. `90`)
-- Lower `SCREENSHOT_INTERVAL` (e.g. `2`) for denser updates
-- Keep browser/app zoom readable (tiny text hurts OCR)
+- Run `/doctor` and check runtime health.
+- Confirm screen capture is active (`capture.screen: Screen capture loop started` in logs).
+- Confirm provider is healthy (`/models`, startup provider logs).
+- If you see stale-screen behavior, check OS permissions (screen recording on macOS).
 
-When no vision backend is available, Marrow falls back to local window metadata so capture pipeline still works.
+### It says microphone/device invalid
 
-## Token Saver Mode
+If logs show `No valid microphone input device detected`, conversation listening is paused.
 
-To cut token usage significantly, enable:
+- Set `AUDIO_INPUT_DEVICE` explicitly, or
+- Set `AUDIO_ENABLED=0` to run screen-only mode.
 
-```env
-TOKEN_SAVER_MODE=1
+Proactive speaking does not require microphone input.
+
+### Duplicate toasts/messages
+
+Recent updates removed duplicate spoken message surfacing from patched `speak()` path. If duplicates remain, restart and retest once.
+
+### Dependency conflicts
+
+Use a clean virtual environment:
+
+```bash
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
+python -m pip check
 ```
 
-This automatically reduces:
+## Common Failure Signatures
 
-- vision token budget per frame
-- reasoning token budget
-- critic/gate token budgets
-- context size passed to models
-- memory-refresh frequency (reuses cached memory context for a few cycles)
-- vision call frequency (throttled even when screenshots continue)
+| Log/error signature | Likely cause | What to do |
+|---|---|---|
+| `OpenBLAS error: Memory allocation still failed` | BLAS thread/memory pressure at startup | Restart with latest code (thread guards added); close heavy apps; use project venv |
+| `No valid microphone input device detected. Audio capture paused.` | Invalid default mic device or missing input hardware | Set `AUDIO_INPUT_DEVICE=<index_or_name>` or `AUDIO_ENABLED=0` |
+| Runs but feels silent | Gate/critic suppressions, stale context, or meeting/flow suppression | Run `/doctor`; verify screen loop logs; test `/proactive status`; check permissions |
+| Says it is not watching continuously | Screen dedupe without fresh persisted context or permission issue | Ensure latest runtime (keepalive capture path), verify screen permission, switch apps and retest |
+| Same message shown twice | Duplicate surfacing path in UI wiring | Restart on latest code; verify single toast per spoken message |
+| Repeats question after user says `yes` | Weak follow-up resolution | Ensure latest runtime (affirmative handling improved in conversation + executor) |
+| Frequent `HTTP Request: POST ...` but no user-visible output | Reasoning calls happening but candidate suppressed before surfacing | Check interrupt policy via `/proactive status`; test with talkative profile; inspect stale-screen notices |
+| `Provider ... none` or model unavailable | Missing API keys/provider misconfigured/Ollama not running | Set `LLM_PROVIDER` + keys; run Ollama if local; verify with `/models` |
 
-You can still override any specific limit in `.env`:
+## Local Adapters
 
-```env
-VISION_MAX_TOKENS=320
-SCREEN_VISION_INTERVAL_SECONDS=12
-REASONING_MAX_TOKENS=360
-WORLD_MODEL_MAX_TOKENS=220
-MEMORY_REFRESH_CYCLES=3
-```
+Marrow can persist reusable local adapter tools:
 
-## Audio Device Troubleshooting
+- `create_local_adapter`
+- `list_local_adapters`
+- `verify_local_adapter`
 
-If you see `Error querying device -1`:
+Adapters are stored in `~/.marrow/adapters/` and auto-registered on next run as `adapter_<name>`.
 
-1. Set `AUDIO_ENABLED=0` to run without mic
-2. Or set `AUDIO_INPUT_DEVICE=<index_or_name>` in `.env`
-3. Restart Marrow
+## Mission Mode
 
-Marrow now avoids infinite crash loops when input devices are invalid.
+Mission primitives are available:
 
-## Permission Checklist
+- create plans
+- execute step-by-step
+- pause/resume
+- rollback via rollback actions
+- recover from failures with alternate strategy path
 
-You can ask Marrow (or call tool) to run:
-
-- `check_permissions`
-- `open_permission_panels`
-
-This checks core runtime capabilities (screen capture, microphone, hotkey, and platform-specific access checks) and reports missing pieces.
-
-From chat/command bar, you can also run:
-
-- `/doctor` for consolidated runtime + permissions diagnostics
-- `/chatstyle <short|balanced|detailed|status>` to tune conversational response length/style
-- `/proactive <quiet|normal|talkative|status>` to tune ambient speaking frequency
-
-Ambient/proactive tuning:
-
-- `PROACTIVE_SPEECH_MIN_URGENCY` (default `4`)
-- `PROACTIVE_SPEECH_MIN_GAP_SECONDS` (default `60`)
-- `PROACTIVE_SIGNAL_DEDUP_SECONDS` (default `420`)
-
-## Context Awareness Behavior
-
-Marrow stores long-horizon interaction and media signals as durable memory and lets reasoning infer what matters. It should surface the insight directly (not internal mechanism labels).
-
-Examples of proactive outcomes:
-
-- repeated outbound outreach with no response -> communication strategy warning
-- suspicious/high-risk media claims -> factual caution
-- active-call participant/presence shift signals -> attention nudge
-
-## Local Adapters (Persistent Capability Spawn)
-
-Marrow can persist custom local adapters for recurring tasks.
-
-- `create_local_adapter` creates a reusable adapter tool
-- adapters are saved in `~/.marrow/adapters/`
-- adapter tools auto-register on next run as `adapter_<name>`
-- use `list_local_adapters` to inspect registered adapters
-- use `verify_local_adapter` to smoke-test generated adapters
-- adapters maintain trust metadata (runs/success/fail) in manifest
-- executor can recommend a high-trust adapter for matching tasks before generic fallback routes
-
-Auto-learn mode can suggest adapter creation when it detects repeated tasks:
-
-```env
-ADAPTER_AUTO_LEARN=1
-ADAPTER_SUGGEST_THRESHOLD=3
-ADAPTER_MIN_TRUST_TO_RECOMMEND=0.35
-```
-
-This lets Marrow "work with what it has" and evolve local capabilities without hardcoding everything in core tools.
+Use `/mission ...` commands from chat.
 
 ## Security and Safety
 
-- Action execution supports approvals/guardrails
-- Destructive operations should be confirmed via approval paths
-- API keys should be kept in `.env` and rotated if exposed
+- Irreversible or high-risk actions should go through approval paths.
+- Keep API keys in env files only (`~/.marrow/.env` recommended).
+- Rotate keys if exposed.
 
-## Current Limitations
+## Known Gaps
 
-- Pixel-level person/face tracking in live calls is heuristic unless a dedicated CV pipeline is added
-- Visual extraction quality depends on model/provider availability and text legibility
-- On some systems, global hotkey registration can require elevated permissions
+- Full universal autonomy still depends on model quality and runtime capability availability.
+- Audio continuity depends on local device/permissions.
+- Proactive quality still benefits from per-user threshold tuning and continued prompt iteration.
 
-## Next Recommended Upgrades
+## Roadmap Priorities
 
-- Add local CV module (person count / face change) for stronger video-call awareness
-- Add per-app strategy plugins (email, meetings, coding, browsing)
-- Add unit tests for provider fallback + context signal extraction
+- Better conversational naturalness and interruption taste.
+- Stronger deterministic verification for tool outcomes.
+- Enhanced mission UI and confidence reporting.
+- Deeper ambient context quality with fewer false suppressions.
