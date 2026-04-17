@@ -289,25 +289,6 @@ MARROW_TOOLS = [
         },
     },
     {
-        "name": "window_list",
-        "description": "List open windows.",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    {
-        "name": "window_focus",
-        "description": "Focus a window by title.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-            },
-            "required": ["title"],
-        },
-    },
-    {
         "name": "system_info",
         "description": "Get system information (CPU, memory, disk, battery).",
         "input_schema": {
@@ -751,19 +732,110 @@ MARROW_TOOLS = [
             "required": ["job_id"],
         },
     },
+    # Mission mode
+    {
+        "name": "mission_create",
+        "description": "Create a mission plan with executable steps.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Mission objective"},
+                "plan_json": {
+                    "type": "string",
+                    "description": "Optional JSON array of steps",
+                },
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "mission_start",
+        "description": "Start executing a mission by id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"mission_id": {"type": "integer"}},
+            "required": ["mission_id"],
+        },
+    },
+    {
+        "name": "mission_pause",
+        "description": "Pause a running mission.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"mission_id": {"type": "integer"}},
+            "required": ["mission_id"],
+        },
+    },
+    {
+        "name": "mission_resume",
+        "description": "Resume a paused mission.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"mission_id": {"type": "integer"}},
+            "required": ["mission_id"],
+        },
+    },
+    {
+        "name": "mission_status",
+        "description": "Show mission progress and step state.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"mission_id": {"type": "integer"}},
+            "required": ["mission_id"],
+        },
+    },
+    {
+        "name": "mission_list",
+        "description": "List recent missions with status.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer"},
+                "status": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "mission_rollback",
+        "description": "Rollback the most recent mission steps using rollback actions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mission_id": {"type": "integer"},
+                "steps": {"type": "integer"},
+            },
+            "required": ["mission_id"],
+        },
+    },
     # Code execution
     {
         "name": "execute_code",
-        "description": "Run Python, JavaScript, or shell code in sandbox.",
+        "description": "Run Python, JavaScript, PowerShell, or shell code in a real workspace-aware subprocess.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "language": {
                     "type": "string",
-                    "description": "python, javascript, bash",
+                    "description": "python, javascript, bash, powershell",
                 },
                 "code": {"type": "string", "description": "Code to execute"},
                 "timeout": {"type": "integer", "description": "Timeout in seconds"},
+                "workspace": {
+                    "type": "string",
+                    "description": "Optional working directory for execution",
+                },
+                "filename": {
+                    "type": "string",
+                    "description": "Optional filename to persist the script in the workspace",
+                },
+                "args": {
+                    "type": "string",
+                    "description": "Optional command-line arguments",
+                },
+                "keep_file": {
+                    "type": "boolean",
+                    "description": "Keep temp script file after execution",
+                },
             },
             "required": ["language", "code"],
         },
@@ -1523,6 +1595,77 @@ def _resolve_followup_task(task: str) -> str:
     return "User said no. Cancel the pending action and confirm cancellation."
 
 
+def _is_history_question(task: str) -> bool:
+    low = (task or "").lower().strip()
+    hints = (
+        "what did you observe",
+        "what have you observed",
+        "based on what you observed",
+        "from what you observed",
+        "what happened earlier",
+        "what was i doing",
+        "what did i do",
+        "in the past",
+        "earlier today",
+        "last hour",
+        "previously",
+        "recap",
+        "summarize what happened",
+    )
+    if any(h in low for h in hints):
+        return True
+    return ("what" in low or "when" in low or "who" in low) and (
+        "earlier" in low or "before" in low or "past" in low
+    )
+
+
+def _build_observation_history_context() -> str:
+    """Compact local recall context for questions about past observations."""
+    lines: list[str] = ["=== OBSERVED HISTORY (local memory) ==="]
+
+    try:
+        obs = db.get_observations(limit=40)
+        if obs:
+            lines.append("Recent observations:")
+            for o in obs[:16]:
+                lines.append(
+                    f"- [{o.get('type', 'obs')}] {str(o.get('content', ''))[:140]}"
+                )
+    except Exception:
+        pass
+
+    try:
+        conv = db.get_recent_conversations(limit=24)
+        if conv:
+            lines.append("Recent conversation snippets:")
+            for row in list(reversed(conv))[-12:]:
+                role = (row.get("role") or "user")[:10]
+                content = (row.get("content") or "").replace("\n", " ").strip()
+                if content:
+                    lines.append(f"- {role}: {content[:130]}")
+    except Exception:
+        pass
+
+    try:
+        ctx = db.get_recent_context(4 * 3600)
+        shots = ctx.get("screenshots", [])
+        if shots:
+            lines.append("Recent app/window activity:")
+            seen = set()
+            for s in shots[:12]:
+                app = (s.get("app_name") or "unknown").strip()
+                title = (s.get("window_title") or "").strip()
+                key = f"{app}|{title}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"- {app}: {title[:110]}")
+    except Exception:
+        pass
+
+    return "\n".join(lines[:180])
+
+
 async def _async_handle_tool_call(
     tool_name: str, tool_input: dict, context: str = ""
 ) -> str:
@@ -1752,6 +1895,57 @@ async def _async_handle_tool_call(
 
         return await sched_mod.unschedule(tool_input["job_id"])
 
+    # Mission mode
+    elif tool_name == "mission_create":
+        from actions import mission as mission_mod
+
+        return await mission_mod.mission_create(
+            goal=tool_input["goal"],
+            plan_json=tool_input.get("plan_json", ""),
+            context=context,
+        )
+
+    elif tool_name == "mission_start":
+        from actions import mission as mission_mod
+
+        return await mission_mod.mission_start(
+            int(tool_input["mission_id"]), context=context
+        )
+
+    elif tool_name == "mission_pause":
+        from actions import mission as mission_mod
+
+        return await mission_mod.mission_pause(int(tool_input["mission_id"]))
+
+    elif tool_name == "mission_resume":
+        from actions import mission as mission_mod
+
+        return await mission_mod.mission_resume(
+            int(tool_input["mission_id"]), context=context
+        )
+
+    elif tool_name == "mission_status":
+        from actions import mission as mission_mod
+
+        return await mission_mod.mission_status(int(tool_input["mission_id"]))
+
+    elif tool_name == "mission_list":
+        from actions import mission as mission_mod
+
+        return await mission_mod.mission_list(
+            limit=int(tool_input.get("limit", 10)),
+            status=str(tool_input.get("status", "")).strip(),
+        )
+
+    elif tool_name == "mission_rollback":
+        from actions import mission as mission_mod
+
+        return await mission_mod.mission_rollback(
+            mission_id=int(tool_input["mission_id"]),
+            steps=int(tool_input.get("steps", 1)),
+            context=context,
+        )
+
     # Code execution
     elif tool_name == "execute_code":
         from actions import code_exec as code_mod
@@ -1759,7 +1953,15 @@ async def _async_handle_tool_call(
         lang = tool_input["language"]
         code = tool_input["code"]
         timeout = tool_input.get("timeout", 30)
-        return await code_mod.code_run(lang, code, timeout)
+        return await code_mod.code_run(
+            lang,
+            code,
+            timeout,
+            workspace=tool_input.get("workspace"),
+            filename=tool_input.get("filename"),
+            args=tool_input.get("args", ""),
+            keep_file=bool(tool_input.get("keep_file", False)),
+        )
 
     # Office
     elif tool_name == "excel_read":
@@ -2098,6 +2300,76 @@ async def _async_handle_tool_call(
 # ─── Main entry point ──────────────────────────────────────────────────────────
 
 
+def _emit_execution_status(kind: str, message: str, **extra) -> None:
+    payload = {"kind": kind, "message": message[:220]}
+    payload.update(extra)
+    try:
+        from ui.bridge import get_bridge
+
+        bridge = get_bridge()
+        bridge.agent_update.emit(json.dumps(payload))
+        bridge.overlay_update.emit(
+            json.dumps(
+                {
+                    "kind": "execution",
+                    "state": "acting",
+                    "current_action": message[:120],
+                    "next_step": extra.get("tool", ""),
+                    "confidence": extra.get("confidence", 0.72),
+                    "body": message[:220],
+                }
+            )
+        )
+    except Exception:
+        pass
+
+
+def _task_needs_generalist_escalation(task: str) -> bool:
+    low = (task or "").lower()
+    triggers = [
+        "build ",
+        "create app",
+        "create software",
+        "build software",
+        "scaffold",
+        "debug ",
+        "fix ",
+        "refactor",
+        "write code",
+        "implement",
+        "ship ",
+        "run tests",
+        "set up repo",
+        "compile",
+    ]
+    return any(token in low for token in triggers)
+
+
+async def _build_dynamic_capability_context() -> str:
+    try:
+        from actions.capabilities import capability_summary_text
+
+        return "\n\nRuntime capabilities:\n" + capability_summary_text()
+    except Exception:
+        return ""
+
+
+async def _maybe_swarm_boost(task: str, context: str) -> str:
+    if not _task_needs_generalist_escalation(task):
+        return ""
+    try:
+        from brain.swarm import get_swarm_coordinator
+
+        _emit_execution_status(
+            "swarm", f"Preparing multi-agent pass for: {task[:120]}", confidence=0.8
+        )
+        summary = await get_swarm_coordinator().run(task, context=context)
+        return "\n\nSwarm analysis:\n" + summary[:2400]
+    except Exception as e:
+        log.debug(f"Swarm boost skipped: {e}")
+        return ""
+
+
 async def execute_action(task: str, context: str = "") -> str:
     """
     Run the LLM with all Marrow tools to complete a task.
@@ -2154,20 +2426,37 @@ async def execute_action(task: str, context: str = "") -> str:
         min_trust=float(config.ADAPTER_MIN_TRUST_TO_RECOMMEND),
     )
 
+    observed_history_context = ""
+    try:
+        if _is_history_question(resolved_task):
+            observed_history_context = (
+                "\n\nPrioritize answering from observed local history below. "
+                "If data is incomplete, state uncertainty clearly.\n"
+                + _build_observation_history_context()
+            )
+    except Exception:
+        pass
+
     adapter_hint = (
         f"\n\nPreferred adapter for this task: {recommended_adapter}. Use it first unless clearly unsuitable."
         if recommended_adapter
         else ""
     )
 
+    capability_context = await _build_dynamic_capability_context()
+    swarm_context = await _maybe_swarm_boost(resolved_task, context)
+
     user_content = (
-        f"{resolved_task}\n\nContext:\n{context}{recent_chat_context}{memory_context}"
+        f"{resolved_task}\n\nContext:\n{context}{recent_chat_context}{memory_context}{observed_history_context}{capability_context}{swarm_context}"
         if context
-        else f"{resolved_task}{recent_chat_context}{memory_context}"
+        else f"{resolved_task}{recent_chat_context}{memory_context}{observed_history_context}{capability_context}{swarm_context}"
     )
     user_content += adapter_hint
 
     log.info(f"Executing action: {task[:80]}")
+    _emit_execution_status(
+        "start", f"Executing: {resolved_task[:120]}", confidence=0.74
+    )
     asyncio.create_task(
         memory_mod.memory_record_conversation("user", task, "action_request")
     )
@@ -2176,6 +2465,12 @@ async def execute_action(task: str, context: str = "") -> str:
         return await _async_handle_tool_call(name, inp, context)
 
     async def _on_tool_call(name: str, inp: dict, result: str) -> None:
+        _emit_execution_status(
+            "tool",
+            f"{name} completed",
+            tool=name,
+            confidence=0.78 if not result.startswith("[error]") else 0.38,
+        )
         asyncio.create_task(
             memory_mod.memory_record_action(
                 task=task,
@@ -2212,6 +2507,9 @@ async def execute_action(task: str, context: str = "") -> str:
             try:
                 from actions import complex_task as ct_mod
 
+                _emit_execution_status(
+                    "escalation", "Escalating to complex planner", confidence=0.68
+                )
                 plan_summary = await ct_mod.execute_complex(
                     goal=task,
                     context=context,
@@ -2250,4 +2548,5 @@ async def execute_action(task: str, context: str = "") -> str:
             "assistant", final_text, "action_response"
         )
     )
+    _emit_execution_status("done", f"Finished: {resolved_task[:120]}", confidence=0.83)
     return final_text or "Done."

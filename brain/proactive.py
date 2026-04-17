@@ -18,6 +18,7 @@ is purely time-driven. It emits:
 """
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -33,27 +34,81 @@ log = logging.getLogger(__name__)
 
 _PRODUCTIVE_APPS = {
     # Editors / IDEs
-    "code", "cursor", "vim", "nvim", "emacs", "pycharm", "intellij",
-    "webstorm", "goland", "rider", "clion", "rubymine", "datagrip",
-    "xcode", "androidstudio", "eclipse", "netbeans", "sublime_text",
-    "notepad++", "brackets", "zed",
+    "code",
+    "cursor",
+    "vim",
+    "nvim",
+    "emacs",
+    "pycharm",
+    "intellij",
+    "webstorm",
+    "goland",
+    "rider",
+    "clion",
+    "rubymine",
+    "datagrip",
+    "xcode",
+    "androidstudio",
+    "eclipse",
+    "netbeans",
+    "sublime_text",
+    "notepad++",
+    "brackets",
+    "zed",
     # Writing
-    "word", "pages", "notion", "obsidian", "logseq", "typora",
-    "scrivener", "bear", "ulysses",
+    "word",
+    "pages",
+    "notion",
+    "obsidian",
+    "logseq",
+    "typora",
+    "scrivener",
+    "bear",
+    "ulysses",
     # Design
-    "figma", "sketch", "photoshop", "illustrator", "affinity",
-    "lightroom", "premiere", "davinci resolve", "final cut pro",
+    "figma",
+    "sketch",
+    "photoshop",
+    "illustrator",
+    "affinity",
+    "lightroom",
+    "premiere",
+    "davinci resolve",
+    "final cut pro",
     # Terminal / shell
-    "terminal", "iterm2", "iterm", "wt", "powershell", "alacritty",
-    "kitty", "hyper", "warp",
+    "terminal",
+    "iterm2",
+    "iterm",
+    "wt",
+    "powershell",
+    "alacritty",
+    "kitty",
+    "hyper",
+    "warp",
     # Spreadsheets / docs
-    "excel", "numbers", "sheets", "google docs", "airtable",
+    "excel",
+    "numbers",
+    "sheets",
+    "google docs",
+    "airtable",
 }
 
 _DISTRACTION_APPS = {
-    "x", "twitter", "reddit", "youtube", "netflix", "tiktok",
-    "hulu", "instagram", "facebook", "twitch", "snapchat",
-    "chess", "steam", "epic games", "roblox",
+    "x",
+    "twitter",
+    "reddit",
+    "youtube",
+    "netflix",
+    "tiktok",
+    "hulu",
+    "instagram",
+    "facebook",
+    "twitch",
+    "snapchat",
+    "chess",
+    "steam",
+    "epic games",
+    "roblox",
 }
 
 # ─── State ────────────────────────────────────────────────────────────────────
@@ -64,32 +119,34 @@ _state = {
     "flow_app": "",
     "flow_start_ts": 0.0,
     "last_focus_debrief_ts": 0.0,
-
     # Distraction tracking
-    "distraction_warned": {},   # app_name → last warn timestamp
-
+    "distraction_warned": {},  # app_name → last warn timestamp
     # Calendar
     "last_calendar_fetch_ts": 0.0,
-    "alerted_events": set(),    # "title|start" strings we already alerted on
-    "cached_events": [],        # list of dicts from last fetch
-
+    "alerted_events": set(),  # "title|start" strings we already alerted on
+    "cached_events": [],  # list of dicts from last fetch
     # End-of-day
     "eod_triggered_today": False,
     "eod_date": "",
+    # Ambient delivery controls
+    "last_spoken_ts": 0.0,
+    "last_signal_by_key": {},  # key -> ts
 }
 
 # Thresholds
-FLOW_THRESHOLD_SECS  = 22 * 60   # 22 min continuous in productive app = flow
-FLOW_DEBRIEF_MIN_SEC = 15 * 60   # only debrief if flow lasted ≥15 min
-DISTRACT_WARN_SECS   = 15 * 60   # 15 min in distraction app = warn
-DISTRACT_COOLDOWN    = 3600      # re-warn at most once per hour per app
-CALENDAR_REFETCH     = 300       # re-fetch calendar every 5 min
-CALENDAR_ALERT_MIN   = 12        # minutes before event to alert
-EOD_HOUR             = 17        # 5 PM end-of-day nudge
-LOOP_INTERVAL        = 60        # run checks every 60s
+FLOW_THRESHOLD_SECS = 22 * 60  # 22 min continuous in productive app = flow
+FLOW_DEBRIEF_MIN_SEC = 15 * 60  # only debrief if flow lasted ≥15 min
+DISTRACT_WARN_SECS = 15 * 60  # 15 min in distraction app = warn
+DISTRACT_COOLDOWN = 3600  # re-warn at most once per hour per app
+CALENDAR_REFETCH = 300  # re-fetch calendar every 5 min
+CALENDAR_ALERT_MIN = 12  # minutes before event to alert
+EOD_HOUR = 17  # 5 PM end-of-day nudge
+LOOP_INTERVAL = 60  # run checks every 60s
+DEFAULT_SIGNAL_DEDUP = 420  # suppress similar proactive signals for 7 minutes
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def _is_productive(app_name: str) -> bool:
     if not app_name:
@@ -151,9 +208,128 @@ def _emit_toast(title: str, body: str, urgency: int = 3) -> None:
     """Thread-safe toast emission."""
     try:
         from ui.bridge import get_bridge
+
         get_bridge().toast_requested.emit(title, body, urgency)
     except Exception:
         pass
+
+
+def _emit_overlay(kind: str, title: str, body: str, confidence: float = 0.78) -> None:
+    try:
+        from ui.bridge import get_bridge
+
+        get_bridge().overlay_update.emit(
+            json.dumps(
+                {
+                    "kind": kind,
+                    "title": title,
+                    "body": body,
+                    "state": "proactive",
+                    "current_action": body[:120],
+                    "confidence": confidence,
+                    "next_step": "",
+                }
+            )
+        )
+    except Exception:
+        pass
+
+
+def _signal_key(kind: str, body: str) -> str:
+    compact = re.sub(r"\s+", " ", (body or "").lower()).strip()
+    return f"{kind}:{compact[:90]}"
+
+
+def _should_emit_signal(kind: str, body: str, urgency: int) -> bool:
+    key = _signal_key(kind, body)
+    now = time.time()
+    dedup_seconds = int(
+        getattr(config, "PROACTIVE_SIGNAL_DEDUP_SECONDS", DEFAULT_SIGNAL_DEDUP)
+    )
+    if urgency >= 5:
+        dedup_seconds = min(dedup_seconds, 120)
+    prev = float(_state["last_signal_by_key"].get(key, 0.0))
+    if prev and now - prev < dedup_seconds:
+        return False
+    _state["last_signal_by_key"][key] = now
+    if len(_state["last_signal_by_key"]) > 240:
+        items = sorted(
+            _state["last_signal_by_key"].items(), key=lambda kv: kv[1], reverse=True
+        )
+        _state["last_signal_by_key"] = dict(items[:180])
+    return True
+
+
+def _in_meeting_now() -> bool:
+    recent_apps = db.get_recent_apps(window_seconds=120)
+    return any(app in config.MEETING_APPS for app in recent_apps)
+
+
+def _in_flow_now() -> bool:
+    recent_apps = db.get_recent_apps(window_seconds=300)
+    has_flow_app = any(app in config.FLOW_STATE_APPS for app in recent_apps)
+    has_meeting = any(app in config.MEETING_APPS for app in recent_apps)
+    return has_flow_app and not has_meeting
+
+
+def _user_actively_speaking() -> bool:
+    try:
+        ctx = db.get_recent_context(12)
+        transcripts = ctx.get("transcripts", [])
+        chars = sum(len((t.get("text") or "").strip()) for t in transcripts)
+        return chars >= 30
+    except Exception:
+        return False
+
+
+def _can_speak_now(urgency: int) -> bool:
+    if not config.PROACTIVE_SPEECH_ENABLED:
+        return False
+    if urgency < int(getattr(config, "PROACTIVE_SPEECH_MIN_URGENCY", 4)):
+        return False
+    if _user_actively_speaking() and urgency < 5:
+        return False
+    if _in_meeting_now() and urgency < 5:
+        return False
+    if _in_flow_now() and urgency < 4:
+        return False
+
+    min_gap = int(getattr(config, "PROACTIVE_SPEECH_MIN_GAP_SECONDS", 60))
+    now = time.time()
+    if now - float(_state["last_spoken_ts"]) < min_gap and urgency < 5:
+        return False
+    _state["last_spoken_ts"] = now
+    return True
+
+
+async def _surface_signal(
+    body: str,
+    urgency: int = 3,
+    *,
+    title: str = "",
+    speak_now: bool = False,
+    kind: str = "proactive",
+) -> None:
+    title = title or _marrow_name()
+    if not _should_emit_signal(kind, body, urgency):
+        log.debug(f"Proactive signal deduped: kind={kind} urgency={urgency}")
+        return
+
+    # Omi-like ambient ladder: overlay pulse -> toast -> speech
+    _emit_overlay(kind, title, body, confidence=0.78)
+    if urgency >= 3:
+        _emit_toast(title, body, urgency)
+
+    auto_min = int(getattr(config, "PROACTIVE_AUTO_SPEAK_MIN_URGENCY", 2))
+    should_speak = speak_now or urgency >= auto_min
+
+    if should_speak and _can_speak_now(urgency):
+        try:
+            from voice.speak import speak
+
+            await speak(body)
+        except Exception as e:
+            log.debug(f"Proactive speech failed: {e}")
 
 
 def _marrow_name() -> str:
@@ -161,6 +337,7 @@ def _marrow_name() -> str:
 
 
 # ─── Focus state ──────────────────────────────────────────────────────────────
+
 
 async def _check_focus_state() -> None:
     """
@@ -179,6 +356,11 @@ async def _check_focus_state() -> None:
             _state["flow_app"] = current_app
             _state["flow_start_ts"] = time.time() - duration_secs
             log.info(f"Flow state entered: {current_app} ({duration_secs // 60}m)")
+            await _surface_signal(
+                f"You're in a good focus run on {current_app}. I'll keep interruptions light unless important.",
+                urgency=2,
+                kind="focus_start",
+            )
             db.insert_observation(
                 "focus_state",
                 f"User entered flow state in {current_app}. Interrupt threshold raised.",
@@ -214,11 +396,14 @@ async def _emit_focus_debrief(flow_mins: int, app: str) -> None:
 
         # Count new items
         transcripts = ctx.get("transcripts", [])
-        new_audio = len([t for t in transcripts if "marrow" not in (t.get("text") or "").lower()])
+        new_audio = len(
+            [t for t in transcripts if "marrow" not in (t.get("text") or "").lower()]
+        )
 
         # Check for pending calendar events
         events_soon = [
-            e for e in _state["cached_events"]
+            e
+            for e in _state["cached_events"]
             if _minutes_until_event(e) is not None and 0 < _minutes_until_event(e) < 60
         ]
 
@@ -232,7 +417,7 @@ async def _emit_focus_debrief(flow_mins: int, app: str) -> None:
             lines.append(f"{new_audio} audio events captured while you worked.")
 
         body = " ".join(lines)
-        _emit_toast(_marrow_name(), body, urgency=4)
+        await _surface_signal(body, urgency=4, speak_now=True, kind="focus_debrief")
 
         db.insert_observation(
             "focus_debrief",
@@ -244,6 +429,7 @@ async def _emit_focus_debrief(flow_mins: int, app: str) -> None:
 
 
 # ─── Distraction detection ────────────────────────────────────────────────────
+
 
 async def _check_distraction() -> None:
     """
@@ -271,7 +457,7 @@ async def _check_distraction() -> None:
     suffix = f" {deadline_context}" if deadline_context else ""
 
     msg = f"You've been on {current_app} for {mins} minutes.{suffix}"
-    _emit_toast(_marrow_name(), msg, urgency=3)
+    await _surface_signal(msg, urgency=3, kind="distraction")
 
     db.insert_observation(
         "distraction_signal",
@@ -297,6 +483,7 @@ def _get_deadline_context() -> str:
 
 
 # ─── Calendar proximity ───────────────────────────────────────────────────────
+
 
 def _minutes_until_event(event: dict) -> Optional[int]:
     """Parse event start time, return minutes until it starts. None if unparseable."""
@@ -360,7 +547,12 @@ async def _check_calendar() -> None:
             location = event.get("location") or event.get("url") or ""
             location_str = f" — {location[:50]}" if location else ""
             msg = f"In {mins} minute{'s' if mins != 1 else ''}: {title}{location_str}"
-            _emit_toast(_marrow_name(), msg, urgency=1)
+            await _surface_signal(
+                msg,
+                urgency=5,
+                speak_now=True,
+                kind="calendar_alert",
+            )
             db.insert_observation(
                 "calendar_alert",
                 f"Upcoming event: {title} in {mins}min. {location_str}",
@@ -373,18 +565,25 @@ async def _check_calendar() -> None:
             event_key_now = f"{title}|{start}|started"
             if event_key_now not in _state["alerted_events"]:
                 _state["alerted_events"].add(event_key_now)
-                _emit_toast(_marrow_name(), f"Starting now: {title}", urgency=1)
+                await _surface_signal(
+                    f"Starting now: {title}",
+                    urgency=5,
+                    speak_now=True,
+                    kind="calendar_start",
+                )
 
 
 async def _fetch_calendar_events() -> list[dict]:
     """Fetch today's calendar events. Runs the executor tool in a thread."""
     try:
         import platform
+
         loop = asyncio.get_event_loop()
 
         def _sync_fetch():
             try:
                 from actions.executor import _get_calendar
+
                 raw = _get_calendar(days=1)
                 return _parse_calendar_text(raw)
             except Exception as e:
@@ -413,7 +612,7 @@ def _parse_calendar_text(raw: str) -> list[dict]:
     time_re = re.compile(
         r"(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)"
         r"|\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})\b",
-        re.IGNORECASE
+        re.IGNORECASE,
     )
     skip_keywords = {"no events", "no upcoming", "error", "nothing scheduled"}
 
@@ -432,7 +631,9 @@ def _parse_calendar_text(raw: str) -> list[dict]:
         if tm:
             current["start"] = (tm.group(1) or tm.group(2) or "").strip()
             # Title is the rest of the line before/after time
-            title_part = line[:tm.start()].strip(" -:•") or line[tm.end():].strip(" -:•")
+            title_part = line[: tm.start()].strip(" -:•") or line[tm.end() :].strip(
+                " -:•"
+            )
             if title_part:
                 current["title"] = title_part[:80]
         elif not current.get("title") and len(line) > 3:
@@ -449,14 +650,17 @@ def _parse_calendar_text(raw: str) -> list[dict]:
 
 # ─── End of day ──────────────────────────────────────────────────────────────
 
+
 async def _check_end_of_day() -> None:
     """At EOD_HOUR, trigger a day-wrap summary if not done today."""
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
 
-    if (now.hour != EOD_HOUR
-            or _state["eod_triggered_today"]
-            or _state["eod_date"] == today_str):
+    if (
+        now.hour != EOD_HOUR
+        or _state["eod_triggered_today"]
+        or _state["eod_date"] == today_str
+    ):
         return
 
     _state["eod_triggered_today"] = True
@@ -468,12 +672,19 @@ async def _check_end_of_day() -> None:
         f"End of working day ({today_str}). Reasoning loop should surface day summary.",
         source="proactive",
     )
+    await _surface_signal(
+        "The workday is winding down. I can help you wrap up open loops and summarize what changed.",
+        urgency=4,
+        speak_now=True,
+        kind="end_of_day",
+    )
 
     # Clear alerted events for tomorrow
     _state["alerted_events"].clear()
 
 
 # ─── Context export for reasoning loop ───────────────────────────────────────
+
 
 def get_proactive_context() -> str:
     """
@@ -520,6 +731,7 @@ def get_proactive_context() -> str:
 
 
 # ─── Main loop ────────────────────────────────────────────────────────────────
+
 
 async def proactive_loop() -> None:
     """

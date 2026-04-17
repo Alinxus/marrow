@@ -143,6 +143,31 @@ def init_db() -> None:
             confidence  REAL DEFAULT 0.5
         );
 
+        CREATE TABLE IF NOT EXISTS missions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts            REAL NOT NULL,
+            goal          TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'planned',
+            current_step  INTEGER DEFAULT 0,
+            total_steps   INTEGER DEFAULT 0,
+            last_error    TEXT,
+            metadata_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS mission_steps (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            mission_id      INTEGER NOT NULL,
+            step_index      INTEGER NOT NULL,
+            title           TEXT,
+            action          TEXT NOT NULL,
+            rollback_action TEXT,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            result          TEXT,
+            started_ts      REAL,
+            finished_ts     REAL,
+            FOREIGN KEY (mission_id) REFERENCES missions(id)
+        );
+
         -- FTS5 trigram indexes for fast search
         CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(
             content, type, source,
@@ -176,6 +201,8 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_contact_ts        ON contact_interactions(ts);
         CREATE INDEX IF NOT EXISTS idx_contact_name      ON contact_interactions(contact);
         CREATE INDEX IF NOT EXISTS idx_claim_ts          ON claim_events(ts);
+        CREATE INDEX IF NOT EXISTS idx_missions_status   ON missions(status);
+        CREATE INDEX IF NOT EXISTS idx_mission_steps_mid ON mission_steps(mission_id, step_index);
     """)
     conn.commit()
 
@@ -346,6 +373,27 @@ def get_recent_apps(window_seconds: int = 300) -> list[str]:
     return [r["app_name"].lower() for r in rows if r["app_name"]]
 
 
+def get_recent_app_switch_count(window_seconds: int = 120) -> int:
+    """Count app switches in recent screenshots (higher means context switching)."""
+    conn = _connect()
+    cutoff = (datetime.utcnow() - timedelta(seconds=window_seconds)).timestamp()
+    rows = conn.execute(
+        "SELECT app_name FROM screenshots WHERE ts > ? ORDER BY ts ASC LIMIT 200",
+        (cutoff,),
+    ).fetchall()
+
+    last = ""
+    switches = 0
+    for r in rows:
+        app = (r["app_name"] or "").lower().strip()
+        if not app:
+            continue
+        if last and app != last:
+            switches += 1
+        last = app
+    return switches
+
+
 def prune_old_data(days: int = 7) -> None:
     """Delete screenshot rows older than N days. Keep observations forever."""
     conn = _connect()
@@ -409,6 +457,127 @@ def search_todos(query: str) -> list:
         (f"%{query}%", f"%{query}%"),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ─── Missions ───────────────────────────────────────────────────────────────────
+
+
+def insert_mission(ts: float, goal: str, metadata_json: str = "") -> int:
+    conn = _connect()
+    cur = conn.execute(
+        "INSERT INTO missions (ts, goal, status, metadata_json) VALUES (?,?,?,?)",
+        (ts, goal, "planned", metadata_json),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def set_mission_total_steps(mission_id: int, total_steps: int) -> None:
+    conn = _connect()
+    conn.execute(
+        "UPDATE missions SET total_steps = ? WHERE id = ?",
+        (total_steps, mission_id),
+    )
+    conn.commit()
+
+
+def update_mission_status(
+    mission_id: int,
+    status: str,
+    current_step: int | None = None,
+    last_error: str = "",
+) -> None:
+    conn = _connect()
+    if current_step is None:
+        conn.execute(
+            "UPDATE missions SET status = ?, last_error = ? WHERE id = ?",
+            (status, last_error, mission_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE missions SET status = ?, current_step = ?, last_error = ? WHERE id = ?",
+            (status, current_step, last_error, mission_id),
+        )
+    conn.commit()
+
+
+def insert_mission_step(
+    mission_id: int,
+    step_index: int,
+    action: str,
+    title: str = "",
+    rollback_action: str = "",
+) -> int:
+    conn = _connect()
+    cur = conn.execute(
+        """INSERT INTO mission_steps
+           (mission_id, step_index, title, action, rollback_action, status)
+           VALUES (?,?,?,?,?,?)""",
+        (mission_id, step_index, title, action, rollback_action, "pending"),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_mission(mission_id: int) -> Optional[dict]:
+    conn = _connect()
+    row = conn.execute("SELECT * FROM missions WHERE id = ?", (mission_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_missions(limit: int = 20, status: str = "") -> list:
+    conn = _connect()
+    if status:
+        rows = conn.execute(
+            "SELECT * FROM missions WHERE status = ? ORDER BY ts DESC LIMIT ?",
+            (status, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM missions ORDER BY ts DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_mission_steps(mission_id: int) -> list:
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM mission_steps WHERE mission_id = ? ORDER BY step_index ASC",
+        (mission_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_mission_step_status(
+    step_id: int,
+    status: str,
+    result: str = "",
+    started_ts: float | None = None,
+    finished_ts: float | None = None,
+) -> None:
+    conn = _connect()
+    current = conn.execute(
+        "SELECT started_ts, finished_ts FROM mission_steps WHERE id = ?",
+        (step_id,),
+    ).fetchone()
+    s_ts = (
+        started_ts
+        if started_ts is not None
+        else (current["started_ts"] if current else None)
+    )
+    f_ts = (
+        finished_ts
+        if finished_ts is not None
+        else (current["finished_ts"] if current else None)
+    )
+    conn.execute(
+        """UPDATE mission_steps
+           SET status = ?, result = ?, started_ts = ?, finished_ts = ?
+           WHERE id = ?""",
+        (status, result, s_ts, f_ts, step_id),
+    )
+    conn.commit()
 
 
 # ─── Reminders ────────────────────────────────────────────────────────────────
@@ -494,6 +663,16 @@ def search_actions(query: str, limit: int = 20) -> list:
     return [dict(r) for r in rows]
 
 
+def search_observations(query: str, limit: int = 20) -> list:
+    """Fast FTS5 search on observations."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT observations.* FROM obs_fts JOIN observations ON obs_fts.rowid = observations.id WHERE obs_fts MATCH ? LIMIT ?",
+        (query, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ─── Conversations history ────────────────────────────────────────────────────────
 
 
@@ -548,7 +727,7 @@ def search_all(query: str, limit: int = 10) -> dict:
     # Search observations
     try:
         rows = conn.execute(
-            "SELECT * FROM observations_fts WHERE observations_fts MATCH ? LIMIT ?",
+            "SELECT observations.* FROM obs_fts JOIN observations ON obs_fts.rowid = observations.id WHERE obs_fts MATCH ? LIMIT ?",
             (query, limit),
         ).fetchall()
         results["observations"] = [dict(r) for r in rows]

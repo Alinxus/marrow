@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 import config
-from storage import db
+from storage import db, state_store
 from capture.screen import screen_capture_loop
 from capture.audio import AudioCaptureService, set_wake_word_callback
 from capture.audio import set_conversation_turn_callback
@@ -66,6 +66,42 @@ def _setup_logging() -> None:
 
 
 log = logging.getLogger("marrow")
+
+_RUNTIME_HANDOFF_ENV = "MARROW_RUNTIME_HANDOFF"
+
+
+def _python_runtime_warning() -> str:
+    try:
+        import sys
+
+        repo_python = (Path.cwd() / ".venv" / "Scripts" / "python.exe").resolve()
+        current = Path(sys.executable).resolve()
+        if repo_python.exists() and current != repo_python:
+            return (
+                f"Marrow is running with {current} instead of repo venv {repo_python}. "
+                "Capabilities may look wrong until you launch from the project venv."
+            )
+    except Exception:
+        pass
+    return ""
+
+
+def _ensure_best_runtime() -> bool:
+    """Re-exec into the repo venv when available so capabilities match shipping runtime."""
+    try:
+        if os.environ.get(_RUNTIME_HANDOFF_ENV) == "1":
+            return False
+        repo_python = (Path.cwd() / ".venv" / "Scripts" / "python.exe").resolve()
+        current = Path(sys.executable).resolve()
+        if repo_python.exists() and current != repo_python:
+            env = os.environ.copy()
+            env[_RUNTIME_HANDOFF_ENV] = "1"
+            args = [str(repo_python), str(Path(__file__).resolve())]
+            subprocess.Popen(args, cwd=str(Path.cwd()), env=env)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _detect_ollama_models() -> list[str]:
@@ -122,6 +158,28 @@ def _apply_settings_updates(updates: dict[str, str]) -> str:
     return f"Updated settings: {', '.join(updates.keys())}"
 
 
+def _enforce_default_behavior_profile() -> None:
+    """Make talkative proactive + conversation mode the startup default."""
+    desired = {
+        "CONVERSATION_ENABLED": "1",
+        "PROACTIVE_FREQUENCY": "4",
+        "PROACTIVE_SPEECH_MIN_URGENCY": "2",
+        "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "2",
+        "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "30",
+        "PROACTIVE_SIGNAL_DEDUP_SECONDS": "180",
+    }
+    pending = {
+        k: v for k, v in desired.items() if str(os.environ.get(k, "")).strip() != v
+    }
+    if not pending:
+        return
+    try:
+        _apply_settings_updates(pending)
+        log.info("Applied default talkative + conversation behavior profile")
+    except Exception as exc:
+        log.warning(f"Failed applying default behavior profile: {exc}")
+
+
 def _handle_slash_command(text: str) -> str | None:
     """Handle lightweight slash commands from chat.
 
@@ -141,8 +199,15 @@ def _handle_slash_command(text: str) -> str | None:
             "- /models\n"
             "- /provider <auto|openai|anthropic|ollama|none>\n"
             "- /model <reasoning|scoring|vision> <model_name>\n"
+            "- /capabilities\n"
+            "- /selfcheck\n"
+            "- /doctor\n"
+            "- /chatstyle <short|balanced|detailed|status>\n"
+            "- /proactive <quiet|normal|talkative|status>\n"
             "- /conversation <on|off|status>\n"
-            "- /audio <on|off>\n"
+            "- /mission <start|pause|resume|rollback|status> [goal]\n"
+            "- /swarm <run|status> [goal]\n"
+            "- /audio <on|off|status>\n"
             "- /hotkey <on|off>\n"
             "- /wakeword <on|off>"
         )
@@ -202,9 +267,121 @@ def _handle_slash_command(text: str) -> str | None:
             updates[key] = name
         return _apply_settings_updates(updates)
 
+    if cmd == "/capabilities":
+        from actions.capabilities import capability_summary_text
+
+        return capability_summary_text()
+
+    if cmd == "/selfcheck":
+        lines = []
+        runtime_warning = _python_runtime_warning()
+        if runtime_warning:
+            lines.append("Runtime:")
+            lines.append(runtime_warning)
+        from actions.capabilities import capability_summary_text
+
+        lines.append(capability_summary_text())
+        return "\n".join(lines)
+
+    if cmd == "/doctor":
+        from actions.capabilities import capability_summary_text
+        from actions.permissions import check_permissions
+        from brain.llm import get_client
+
+        lines = ["## Marrow Doctor"]
+        runtime_warning = _python_runtime_warning()
+        if runtime_warning:
+            lines.append(f"- Runtime warning: {runtime_warning}")
+
+        try:
+            llm = get_client()
+            lines.append(
+                f"- LLM runtime: provider={llm.provider}, reasoning_model={llm.model_for('reasoning')}"
+            )
+        except Exception as e:
+            lines.append(f"- LLM runtime: unavailable ({e})")
+
+        lines.append("")
+        lines.append(capability_summary_text())
+        lines.append("")
+        lines.append(check_permissions(detailed=True))
+        lines.append("")
+        lines.append(
+            "Recommended fixes: if anything is missing, run open_permission_panels, then restart terminal + Marrow."
+        )
+        return "\n".join(lines)
+
+    if cmd == "/chatstyle":
+        if not args or args[0].lower() == "status":
+            current = os.environ.get(
+                "CONVERSATION_RESPONSE_STYLE", config.CONVERSATION_RESPONSE_STYLE
+            )
+            return f"Chat style: {current}"
+        style = args[0].lower()
+        if style not in ("short", "balanced", "detailed"):
+            return "Usage: /chatstyle <short|balanced|detailed|status>"
+        return _apply_settings_updates({"CONVERSATION_RESPONSE_STYLE": style})
+
+    if cmd == "/proactive":
+        if not args or args[0].lower() == "status":
+            min_u = os.environ.get(
+                "PROACTIVE_SPEECH_MIN_URGENCY", str(config.PROACTIVE_SPEECH_MIN_URGENCY)
+            )
+            auto_min = os.environ.get(
+                "PROACTIVE_AUTO_SPEAK_MIN_URGENCY",
+                str(config.PROACTIVE_AUTO_SPEAK_MIN_URGENCY),
+            )
+            gap = os.environ.get(
+                "PROACTIVE_SPEECH_MIN_GAP_SECONDS",
+                str(config.PROACTIVE_SPEECH_MIN_GAP_SECONDS),
+            )
+            dedup = os.environ.get(
+                "PROACTIVE_SIGNAL_DEDUP_SECONDS",
+                str(config.PROACTIVE_SIGNAL_DEDUP_SECONDS),
+            )
+            return f"Proactive: min_urgency={min_u}, auto_speak_min={auto_min}, speech_gap={gap}s, dedup={dedup}s"
+        mode = args[0].lower()
+        profiles = {
+            "quiet": {
+                "PROACTIVE_SPEECH_MIN_URGENCY": "4",
+                "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "4",
+                "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "120",
+                "PROACTIVE_SIGNAL_DEDUP_SECONDS": "600",
+            },
+            "normal": {
+                "PROACTIVE_SPEECH_MIN_URGENCY": "3",
+                "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "3",
+                "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "60",
+                "PROACTIVE_SIGNAL_DEDUP_SECONDS": "420",
+            },
+            "talkative": {
+                "PROACTIVE_SPEECH_MIN_URGENCY": "2",
+                "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "2",
+                "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "30",
+                "PROACTIVE_SIGNAL_DEDUP_SECONDS": "180",
+            },
+        }
+        if mode not in profiles:
+            return "Usage: /proactive <quiet|normal|talkative|status>"
+        return _apply_settings_updates(profiles[mode])
+
+    if cmd == "/audio" and args and args[0].lower() == "status":
+        from actions.capabilities import capability_summary_text
+
+        audio_lines = [
+            line
+            for line in capability_summary_text().splitlines()
+            if line.startswith("Audio:")
+        ]
+        return "\n".join(audio_lines) if audio_lines else "Audio status unavailable."
+
     if cmd in ("/audio", "/hotkey", "/wakeword"):
         if not args or args[0].lower() not in ("on", "off"):
-            return f"Usage: {cmd} <on|off>"
+            return (
+                f"Usage: {cmd} <on|off>"
+                if cmd != "/audio"
+                else "Usage: /audio <on|off|status>"
+            )
         val = "1" if args[0].lower() == "on" else "0"
         key = {
             "/audio": "AUDIO_ENABLED",
@@ -221,18 +398,75 @@ def _handle_slash_command(text: str) -> str | None:
         mode = args[0].lower()
         if mode == "status":
             active = conversation.is_active()
-            return f"Conversation mode: {'active' if active else 'inactive'}" + (
-                f" ({conversation.remaining_seconds()}s left)" if active else ""
+            enabled = os.environ.get("CONVERSATION_ENABLED", "1") == "1"
+            return (
+                f"Conversation: {'enabled' if enabled else 'disabled'}, {'active' if active else 'inactive'}"
+                + (f" ({conversation.remaining_seconds()}s left)" if active else "")
             )
         if mode == "on":
+            _apply_settings_updates({"CONVERSATION_ENABLED": "1"})
             conversation.activate_session()
             return f"Conversation mode ON ({conversation.remaining_seconds()}s)."
         if mode == "off":
+            _apply_settings_updates({"CONVERSATION_ENABLED": "0"})
             conversation.end_session()
             return "Conversation mode OFF."
         return "Usage: /conversation <on|off|status>"
 
     return f"Unknown command: {cmd}. Try /help"
+
+
+async def _handle_mission_command(text: str) -> str | None:
+    t = (text or "").strip()
+    if not t.startswith("/mission"):
+        return None
+
+    parts = t.split(maxsplit=2)
+    action = parts[1].lower() if len(parts) > 1 else "status"
+    goal = parts[2].strip() if len(parts) > 2 else ""
+
+    from brain.mission import get_mission_controller
+
+    controller = get_mission_controller()
+
+    if action in ("start", "run"):
+        if not goal:
+            return "Usage: /mission start <goal>"
+        mission = await controller.start_mission(goal)
+        return (
+            f"Started mission {mission.mission_id[:8]} with {len(mission.steps)} steps. "
+            f"State: {mission.state}."
+        )
+    if action == "pause":
+        return await controller.pause_current()
+    if action == "resume":
+        return await controller.resume_current()
+    if action == "rollback":
+        return await controller.rollback_current()
+    if action == "status":
+        return controller.current_status_text()
+    return "Usage: /mission <start|pause|resume|rollback|status> [goal]"
+
+
+async def _handle_swarm_command(text: str) -> str | None:
+    t = (text or "").strip()
+    if not t.startswith("/swarm"):
+        return None
+
+    parts = t.split(maxsplit=2)
+    action = parts[1].lower() if len(parts) > 1 else "status"
+    goal = parts[2].strip() if len(parts) > 2 else ""
+
+    from brain.swarm import get_swarm_coordinator
+
+    coordinator = get_swarm_coordinator()
+    if action == "run":
+        if not goal:
+            return "Usage: /swarm run <goal>"
+        return await coordinator.run(goal)
+    if action == "status":
+        return coordinator.status_text()
+    return "Usage: /swarm <run|status> [goal]"
 
 
 # ─── Global asyncio loop reference ────────────────────────────────────────────
@@ -261,7 +495,9 @@ async def _main_async() -> None:
 
     db.init_db()
     db.prune_old_data(days=7)
+    state_store.init_state_store()
     init_scheduler()
+    _enforce_default_behavior_profile()
 
     audio_service = AudioCaptureService()
     interrupt_engine = InterruptDecisionEngine()
@@ -306,6 +542,9 @@ async def _main_async() -> None:
     # ── On-demand activation ──────────────────────────────────────────────
     async def _handle_conversation_turn(user_text: str) -> None:
         """Low-latency conversational turn handler (voice-first back-and-forth)."""
+        if not config.CONVERSATION_ENABLED:
+            return
+
         from brain import conversation
         from voice.speak import speak
 
@@ -328,6 +567,24 @@ async def _main_async() -> None:
         from brain import conversation
         from voice.speak import speak_filler
 
+        if not config.CONVERSATION_ENABLED:
+            _emit("state_changed", "thinking")
+            try:
+                context = db.get_recent_context(config.CONTEXT_WINDOW_SECONDS)
+                ctx_str = _build_context_summary(context)
+                deep_world = _build_deep_world_context()
+                memory_ctx = await _build_semantic_memory_context(ctx_str)
+                full_ctx = "\n\n".join(filter(None, [deep_world, memory_ctx, ctx_str]))
+                result = await _run_reasoning(full_ctx)
+                if result:
+                    await _handle_result(result, ctx_str, interrupt_engine)
+            except Exception as e:
+                log.error(f"On-demand activation error: {e}")
+                _emit("state_changed", "error")
+            else:
+                _emit("state_changed", "idle")
+            return
+
         # Enter conversational mode on wake/hotkey activation.
         conversation.activate_session()
 
@@ -345,22 +602,6 @@ async def _main_async() -> None:
         _emit("state_changed", "idle")
         return
 
-        _emit("state_changed", "thinking")
-        try:
-            context = db.get_recent_context(config.CONTEXT_WINDOW_SECONDS)
-            ctx_str = _build_context_summary(context)
-            deep_world = _build_deep_world_context()
-            memory_ctx = await _build_semantic_memory_context(ctx_str)
-            full_ctx = "\n\n".join(filter(None, [deep_world, memory_ctx, ctx_str]))
-            result = await _run_reasoning(full_ctx)
-            if result:
-                await _handle_result(result, ctx_str, interrupt_engine)
-        except Exception as e:
-            log.error(f"On-demand activation error: {e}")
-            _emit("state_changed", "error")
-        else:
-            _emit("state_changed", "idle")
-
     od_set_loop(_asyncio_loop)
     set_activation_callback(on_activation)
     set_wake_word_callback(on_activation)
@@ -370,6 +611,25 @@ async def _main_async() -> None:
         _bridge.set_loop(_asyncio_loop)
         _bridge.set_activation_callback(on_activation)
     init_on_demand()
+
+    if config.MISSION_RECOVERY_ENABLED:
+        try:
+            from brain.mission import get_mission_controller
+
+            recovered = get_mission_controller().recover_last_mission()
+            if recovered:
+                _emit(
+                    "toast_requested",
+                    config.MARROW_NAME,
+                    f"Recovered paused mission: {recovered.goal[:120]}",
+                    3,
+                )
+        except Exception as exc:
+            log.warning(f"Mission recovery skipped: {exc}")
+
+    runtime_warning = _python_runtime_warning()
+    if runtime_warning:
+        _emit("toast_requested", config.MARROW_NAME, runtime_warning[:220], 2)
 
     # ── Startup permission health check ───────────────────────────────────
     try:
@@ -490,6 +750,16 @@ async def _main_async() -> None:
             while not _shutdown_event.is_set():
                 await asyncio.sleep(60)
 
+    async def _predictive_loop():
+        try:
+            from brain.predictive import predictive_loop
+
+            await predictive_loop()
+        except Exception as e:
+            log.warning(f"Predictive loop unavailable: {e}")
+            while not _shutdown_event.is_set():
+                await asyncio.sleep(60)
+
     # ── Claim verifier loop ───────────────────────────────────────────────
     async def _claim_verifier_loop():
         try:
@@ -525,6 +795,7 @@ async def _main_async() -> None:
         asyncio.create_task(_supervised("agi", agi_loop)),
         asyncio.create_task(_supervised("claim_verifier", _claim_verifier_loop)),
         asyncio.create_task(_supervised("proactive", _proactive_loop)),
+        asyncio.create_task(_supervised("predictive", _predictive_loop)),
         asyncio.create_task(_stats_loop()),
         asyncio.create_task(_shutdown_event.wait()),
     ]
@@ -569,6 +840,18 @@ async def _execute_user_task(text: str) -> None:
     bridge = get_bridge()
     bridge.state_changed.emit("acting")
     try:
+        mission_result = await _handle_mission_command(text)
+        if mission_result is not None:
+            bridge.task_response.emit(mission_result)
+            bridge.toast_requested.emit(config.MARROW_NAME, mission_result[:200], 4)
+            return
+
+        swarm_result = await _handle_swarm_command(text)
+        if swarm_result is not None:
+            bridge.task_response.emit(swarm_result)
+            bridge.toast_requested.emit(config.MARROW_NAME, swarm_result[:200], 4)
+            return
+
         slash_result = _handle_slash_command(text)
         if slash_result is not None:
             bridge.task_response.emit(slash_result)
@@ -684,6 +967,7 @@ def _run_qt() -> None:
     control_bar = None
     dashboard = None
     orb = None
+    overlay = None
 
     if ui_mode == "controlbar":
         from ui.control_bar import MarrowControlBar
@@ -709,6 +993,14 @@ def _run_qt() -> None:
                 dashboard.open_near(orb.geometry())
 
         orb.dashboard_toggle.connect(_toggle_dashboard)
+
+    if config.OVERLAY_ENABLED:
+        try:
+            from ui.overlay import MarrowOverlay
+
+            overlay = MarrowOverlay()
+        except Exception as e:
+            log.warning(f"Overlay init failed: {e}")
 
     # ── Settings panel ────────────────────────────────────────────────────
     settings_panel = [None]  # lazy singleton
@@ -850,6 +1142,8 @@ def _run_qt() -> None:
 
 
 def main() -> None:
+    if _ensure_best_runtime():
+        return
     _setup_logging()
     # Qt must own the main thread on Windows.
     # Backend starts from inside _run_qt once QApplication is alive.

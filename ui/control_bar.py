@@ -4,6 +4,7 @@ Compact always-on-top bar with hover expansion, embedded proactive cards,
 and slide-down conversation panel.
 """
 
+import json
 import logging
 from typing import Optional
 
@@ -215,6 +216,21 @@ class MarrowControlBar(QWidget):
         self._notif_wrap.setWidget(self._notif_box)
         body_l.addWidget(self._notif_wrap)
 
+        self._mission_lbl = _lbl("", QColor(50, 60, 90), 8, bold=True)
+        self._mission_lbl.setWordWrap(True)
+        self._mission_lbl.setVisible(False)
+        body_l.addWidget(self._mission_lbl)
+
+        self._agent_lbl = _lbl("", QColor(88, 80, 40), 8)
+        self._agent_lbl.setWordWrap(True)
+        self._agent_lbl.setVisible(False)
+        body_l.addWidget(self._agent_lbl)
+
+        self._audio_lbl = _lbl("", QColor(60, 90, 60), 8)
+        self._audio_lbl.setWordWrap(True)
+        self._audio_lbl.setVisible(False)
+        body_l.addWidget(self._audio_lbl)
+
         self._chat = ChatSection()
         self._chat.task_submitted.connect(self._on_task_submitted)
         body_l.addWidget(self._chat)
@@ -231,6 +247,9 @@ class MarrowControlBar(QWidget):
             b.mic_active.connect(self._mic.set_active)
             b.message_spoken.connect(self._on_message_spoken)
             b.task_response.connect(self._on_task_response)
+            b.mission_update.connect(self._on_mission_update)
+            b.agent_update.connect(self._on_agent_update)
+            b.audio_debug.connect(self._on_audio_debug)
         except Exception as e:
             log.warning(f"Control bar bridge failed: {e}")
 
@@ -304,6 +323,33 @@ class MarrowControlBar(QWidget):
 
     def _on_task_response(self, result: str):
         self._chat.replace_last_marrow(result or "Done.")
+
+    def _on_mission_update(self, payload_json: str):
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return
+        step = payload.get("step") or {}
+        text = f"{payload.get('state', 'idle')}: {step.get('title') or payload.get('goal', '')}"
+        self._mission_lbl.setText(text[:120])
+        self._mission_lbl.setVisible(True)
+        if payload.get("state") in {"planning", "executing", "verifying"}:
+            self._expand(transient=True)
+
+    def _on_agent_update(self, payload_json: str):
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return
+        role = payload.get("role")
+        status = payload.get("status")
+        if role and status:
+            self._agent_lbl.setText(f"{role}: {status}")
+            self._agent_lbl.setVisible(True)
+
+    def _on_audio_debug(self, message: str):
+        self._audio_lbl.setText(message[:120])
+        self._audio_lbl.setVisible(True)
 
     def _ask(self):
         try:

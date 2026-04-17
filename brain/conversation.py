@@ -13,6 +13,13 @@ log = logging.getLogger(__name__)
 
 _active_until: float = 0.0
 _history: list[dict] = []
+_recent_refs: dict[str, str] = {
+    "tab": "",
+    "window": "",
+    "app": "",
+    "file": "",
+    "person": "",
+}
 _lock = asyncio.Lock()
 
 _EXIT_PATTERNS = [
@@ -74,12 +81,62 @@ def extract_wake_query(text: str) -> str:
             return ""
         if low.startswith(ww_low + " "):
             return t[len(ww) :].strip()
-    return t
+    return ""
+
+
+def note_reference(kind: str, value: str) -> None:
+    kind = (kind or "").strip().lower()
+    value = (value or "").strip()
+    if kind in _recent_refs and value:
+        _recent_refs[kind] = value
+
+
+def _refresh_references_from_context(context_hint: str) -> None:
+    lines = [line.strip() for line in (context_hint or "").splitlines() if line.strip()]
+    for line in lines[:8]:
+        if line.startswith("[") and line.endswith("]"):
+            note_reference("app", line.strip("[]"))
+        elif "." in line and any(
+            ext in line.lower() for ext in (".py", ".ts", ".js", ".md", ".txt", ".json")
+        ):
+            note_reference("file", line)
+        elif "http" in line or "www." in line:
+            note_reference("tab", line)
+        elif not _recent_refs.get("window"):
+            note_reference("window", line[:120])
+
+
+def _resolve_followup_references(text: str) -> str:
+    updated = text
+    replacements = {
+        "that tab": _recent_refs.get("tab") or _recent_refs.get("window"),
+        "that window": _recent_refs.get("window") or _recent_refs.get("app"),
+        "that app": _recent_refs.get("app"),
+        "that file": _recent_refs.get("file") or _recent_refs.get("window"),
+        "same person": _recent_refs.get("person"),
+    }
+    for needle, replacement in replacements.items():
+        if replacement and needle in updated.lower():
+            updated = re.sub(
+                re.escape(needle), replacement, updated, flags=re.IGNORECASE
+            )
+    return updated
 
 
 def _is_exit_utterance(text: str) -> bool:
     low = (text or "").lower().strip()
     return any(p in low for p in _EXIT_PATTERNS)
+
+
+def _style_instruction() -> str:
+    style = (
+        getattr(config, "CONVERSATION_RESPONSE_STYLE", "balanced") or "balanced"
+    ).lower()
+    if style == "short":
+        return "Keep every answer to one short sentence unless the user explicitly asks for detail."
+    if style == "detailed":
+        return "Give concise but complete answers in 2-5 sentences with direct actionable details."
+    return "Prefer 1-2 short sentences unless user asks for detail."
 
 
 async def handle_turn(user_text: str, context_hint: str = "") -> str:
@@ -95,13 +152,17 @@ async def handle_turn(user_text: str, context_hint: str = "") -> str:
         return "Got it. I'll stay quiet until you call me again."
 
     activate_session()
+    _refresh_references_from_context(context_hint)
+    user_text = _resolve_followup_references(user_text)
 
-    system = (
-        "You are Marrow in live conversation mode."
-        "Be brief, natural, and helpful."
-        "Prefer 1-2 short sentences unless user asked for detail."
-        "If an action is requested, say you'll do it and keep response concise."
-        "No internal jargon."
+    system = " ".join(
+        [
+            "You are Marrow in live conversation mode.",
+            "Be brief, natural, and helpful.",
+            _style_instruction(),
+            "If an action is requested, say you'll do it and keep response concise.",
+            "No internal jargon.",
+        ]
     )
 
     async with _lock:

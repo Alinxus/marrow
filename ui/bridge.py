@@ -79,6 +79,21 @@ class MarrowBridge(QObject):
     # Claim verified: JSON string {claim, verdict, explanation, sources, confidence}
     claim_verified = pyqtSignal(str)
 
+    # Mission runtime update: JSON string
+    mission_update = pyqtSignal(str)
+
+    # Agent / swarm update: JSON string
+    agent_update = pyqtSignal(str)
+
+    # Overlay payload update: JSON string
+    overlay_update = pyqtSignal(str)
+
+    # Verification payload update: JSON string
+    verification_update = pyqtSignal(str)
+
+    # Audio diagnostics / live status
+    audio_debug = pyqtSignal(str)
+
     # ── UI → Backend signals ──────────────────────────────────────────────
     # User pressed "Ask Marrow" button — triggers on-demand activation
     ask_requested = pyqtSignal()

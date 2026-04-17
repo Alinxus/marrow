@@ -769,6 +769,8 @@ class MarrowDashboard(QWidget):
             b.mic_active.connect(self._on_mic_active)
             b.transcript_heard.connect(self._on_transcript)
             b.task_response.connect(self._on_task_response)
+            b.mission_update.connect(self._on_mission_update)
+            b.audio_debug.connect(self._on_audio_debug)
         except Exception as e:
             log.warning(f"Dashboard bridge connect: {e}")
 
@@ -838,6 +840,18 @@ class MarrowDashboard(QWidget):
         """Executor returned — update the chat with the result."""
         self._pending_response = False
         self._chat.replace_last_marrow(result or "Done.")
+
+    def _on_mission_update(self, payload_json: str):
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return
+        step = payload.get("step") or {}
+        label = step.get("title") or payload.get("goal", "")
+        self._listen_lbl.setText(f"mission {payload.get('state', 'idle')}: {label[:42]}")
+
+    def _on_audio_debug(self, message: str):
+        self._listen_lbl.setText(message[:64])
 
     def _tick_meta(self):
         self._message.tick()

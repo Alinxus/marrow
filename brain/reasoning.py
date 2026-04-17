@@ -442,11 +442,14 @@ def _gate_threshold() -> float:
 
 
 def _daily_limit_ok() -> bool:
+    # Keep only a hard emergency brake for runaway loops.
+    # Day-to-day interrupt volume should be model/context-driven.
+    hard_safety_limit = 120
     cutoff = time.time() - 86400
     today_interrupts = db.count_interruptions_since(cutoff)
-    if today_interrupts >= config.MAX_DAILY_INTERRUPTS:
-        log.debug(
-            f"Daily interrupt cap reached ({today_interrupts}/{config.MAX_DAILY_INTERRUPTS})"
+    if today_interrupts >= hard_safety_limit:
+        log.warning(
+            f"Interrupt safety brake hit ({today_interrupts}/{hard_safety_limit})"
         )
         return False
     return True
@@ -567,6 +570,7 @@ async def reasoning_loop(
             proactive_context = ""
             try:
                 from brain.proactive import get_proactive_context
+
                 proactive_context = get_proactive_context()
             except Exception:
                 pass
@@ -574,7 +578,14 @@ async def reasoning_loop(
             # Assemble full context for reasoning
             full_context = "\n\n".join(
                 filter(
-                    None, [deep_world, proactive_context, high_signal_context, memory_context, context_str]
+                    None,
+                    [
+                        deep_world,
+                        proactive_context,
+                        high_signal_context,
+                        memory_context,
+                        context_str,
+                    ],
                 )
             )
 

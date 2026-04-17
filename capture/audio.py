@@ -33,7 +33,9 @@ from storage import db
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-CHUNK_SECONDS = config.AUDIO_CHUNK_SECONDS
+CHUNK_SECONDS = max(
+    2, int(getattr(config, "AUDIO_ACTIVE_CHUNK_SECONDS", config.AUDIO_CHUNK_SECONDS))
+)
 
 # Wake word detection
 WAKE_WORDS = ["marrow", "hey marrow"]
@@ -110,6 +112,15 @@ _mac_mic_perm_warned = False
 _conversation_turn_callback = None
 
 
+def _emit_audio_status(message: str) -> None:
+    try:
+        from ui.bridge import get_bridge
+
+        get_bridge().audio_debug.emit(message[:220])
+    except Exception:
+        pass
+
+
 def set_wake_word_callback(callback):
     """Set callback for when wake word is detected."""
     global _wake_word_callback
@@ -133,6 +144,7 @@ class AudioCaptureService:
             self._running = False
             self._loop = None
             log.info("Audio service initialized in disabled mode")
+            _emit_audio_status("audio disabled")
             return
 
         self._deepgram_key = config.DEEPGRAM_API_KEY
@@ -145,6 +157,7 @@ class AudioCaptureService:
             self._audio_queue: queue.Queue = queue.Queue()
             self._running = False
             self._loop = None
+            _emit_audio_status("audio backend set to none")
             return
 
         if backend == "deepgram" and not self._deepgram_key:
@@ -155,6 +168,7 @@ class AudioCaptureService:
             self._audio_queue: queue.Queue = queue.Queue()
             self._running = False
             self._loop = None
+            _emit_audio_status("deepgram selected but API key missing")
             return
 
         # Prefer Deepgram when explicitly requested or when auto+key exists.
@@ -164,6 +178,7 @@ class AudioCaptureService:
         if use_deepgram:
             log.info("Audio: Deepgram streaming enabled")
             self._model = None
+            _emit_audio_status("deepgram ready")
         elif use_whisper:
             log.info(f"Audio: Whisper fallback ({config.WHISPER_MODEL})")
             try:
@@ -182,12 +197,14 @@ class AudioCaptureService:
                 self._deepgram_key = ""
                 self._running = False
                 self._audio_backend_error = str(e)
+                _emit_audio_status("whisper init failed")
         else:
             log.info(
                 "Audio STT backend unavailable in current mode — listening disabled"
             )
             self._model = None
             self._deepgram_key = ""
+            _emit_audio_status("no audio backend available")
 
         self._audio_queue: queue.Queue = queue.Queue()
         self._running = False
@@ -261,6 +278,7 @@ class AudioCaptureService:
         log.info(
             f"Audio capture loop started ({CHUNK_SECONDS}s chunks, {SAMPLE_RATE}Hz)"
         )
+        _emit_audio_status(f"listening in {CHUNK_SECONDS}s chunks")
 
         # Signal UI that mic is active
         try:
@@ -273,6 +291,9 @@ class AudioCaptureService:
         selected_device = _select_input_device()
         log.info(
             f"Audio input device: {selected_device if selected_device is not None else 'default'}"
+        )
+        _emit_audio_status(
+            f"mic active on device {selected_device if selected_device is not None else 'default'}"
         )
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -297,9 +318,11 @@ class AudioCaptureService:
 
                     if _is_silent(audio):
                         log.debug("Audio chunk silent — skipping transcription")
+                        _emit_audio_status("listening: silence")
                         continue
 
                     try:
+                        _emit_audio_status("transcribing")
                         text = self._transcribe(audio)
                         if text:
                             self._on_transcript(text)
@@ -315,11 +338,16 @@ class AudioCaptureService:
         """Called from any backend when a transcript is ready."""
         if not text.strip():
             return
+        if len(text.strip()) < max(
+            1, int(getattr(config, "AUDIO_MIN_TRANSCRIPT_CHARS", 3))
+        ):
+            return
         ts = time.time()
         from storage import db as _db
 
         _db.insert_transcript(ts, text)
         log.info(f"Heard: {text[:100]}")
+        _emit_audio_status(f"heard: {text[:80]}")
 
         try:
             from ui.bridge import get_bridge
@@ -329,6 +357,7 @@ class AudioCaptureService:
             pass
 
         if _check_wake_word(text) and _wake_word_callback and self._loop:
+            _emit_audio_status("wake word detected")
             asyncio.run_coroutine_threadsafe(_wake_word_callback(text), self._loop)
             return
 
@@ -337,16 +366,50 @@ class AudioCaptureService:
             from brain import conversation
             from voice.speak import cancel_speaking
 
-            if conversation.is_active() and _conversation_turn_callback and self._loop:
+            if (
+                config.CONVERSATION_ENABLED
+                and conversation.is_active()
+                and _conversation_turn_callback
+                and self._loop
+            ):
                 # Any utterance in active conversation extends session timeout.
                 conversation.touch_session()
                 # User is speaking while Marrow may be speaking: barge-in support.
                 cancel_speaking()
+                _emit_audio_status("conversation turn")
                 asyncio.run_coroutine_threadsafe(
                     _conversation_turn_callback(text), self._loop
                 )
+                return
         except Exception:
             pass
+
+        # If the user is speaking directly to Marrow without a clean wake-word hit,
+        # treat short imperative utterances as activation attempts to reduce dead air.
+        lowered = text.lower().strip()
+        direct_prefixes = (
+            "marrow ",
+            "hey marrow ",
+            "can you ",
+            "could you ",
+            "please ",
+        )
+        if (
+            config.CONVERSATION_ENABLED
+            and any(lowered.startswith(prefix) for prefix in direct_prefixes)
+            and self._loop
+        ):
+            if _conversation_turn_callback:
+                try:
+                    from brain import conversation
+
+                    conversation.activate_session()
+                except Exception:
+                    pass
+                _emit_audio_status("direct request detected")
+                asyncio.run_coroutine_threadsafe(
+                    _conversation_turn_callback(text), self._loop
+                )
 
     async def _run_deepgram(self) -> None:
         """
@@ -373,6 +436,7 @@ class AudioCaptureService:
             pass
 
         log.info("Deepgram streaming started")
+        _emit_audio_status("deepgram streaming started")
         dg = DeepgramClient(self._deepgram_key)
 
         while self._running:
@@ -389,6 +453,7 @@ class AudioCaptureService:
 
                 def on_error(self_dg, error, **kwargs):
                     log.warning(f"Deepgram error: {error}")
+                    _emit_audio_status(f"deepgram error: {error}")
 
                 conn.on(LiveTranscriptionEvents.Transcript, on_message)
                 conn.on(LiveTranscriptionEvents.Error, on_error)
@@ -418,6 +483,7 @@ class AudioCaptureService:
 
             except Exception as e:
                 log.error(f"Deepgram stream error: {e} — reconnecting in 5s")
+                _emit_audio_status("deepgram reconnecting")
                 await asyncio.sleep(5)
 
     def set_loop(self, loop) -> None:
@@ -436,6 +502,7 @@ class AudioCaptureService:
             if not self._unavailable_notified:
                 self._unavailable_notified = True
                 log.warning("Audio backend unavailable; running in screen-only mode.")
+                _emit_audio_status("audio backend unavailable")
                 try:
                     from ui.bridge import get_bridge
 

@@ -359,8 +359,13 @@ async def screen_capture_loop() -> None:
 
                 # Emit focus change to UI
                 try:
+                    from brain.conversation import note_reference
+                    from brain.digital_twin import note_focus_change
                     from ui.bridge import get_bridge
 
+                    note_reference("app", app_name)
+                    note_reference("window", window_title)
+                    note_focus_change(app_name, window_title)
                     get_bridge().focus_changed.emit(app_name, window_title)
                 except Exception:
                     pass

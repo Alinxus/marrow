@@ -22,6 +22,7 @@ import platform
 import queue
 import random
 import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -39,6 +40,7 @@ log = logging.getLogger(__name__)
 
 _cancel_event = threading.Event()
 _speaking_lock = asyncio.Lock()
+_last_filler_at = 0.0
 
 # Singleton sync ElevenLabs client (lazy init)
 _el_client = None
@@ -91,6 +93,11 @@ async def speak_filler() -> None:
     Speak an immediate short filler via SAPI (no API latency).
     Use before a slow async operation so the user hears something right away.
     """
+    global _last_filler_at
+    now = time.time()
+    if now - _last_filler_at < 5.0:
+        return
+    _last_filler_at = now
     phrase = random.choice(FILLER_PHRASES)
     await _speak_system(phrase)
 

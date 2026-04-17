@@ -31,9 +31,9 @@ log = logging.getLogger(__name__)
 class InterruptCandidate:
     message: str
     reasoning: str
-    urgency: int              # 1-5
-    source_app: str = ""      # what app triggered this
-    context_snippet: str = "" # brief snippet of what was seen
+    urgency: int  # 1-5
+    source_app: str = ""  # what app triggered this
+    context_snippet: str = ""  # brief snippet of what was seen
     act: Optional[dict] = None  # {"task": ..., "context": ...} if action needed
 
 
@@ -43,33 +43,48 @@ class InterruptDecisionEngine:
 
     def should_speak(self, candidate: InterruptCandidate) -> bool:
         now = time.time()
+        in_meeting = _in_meeting()
+        in_flow = _in_flow_state()
 
         # 1. Urgency 5 — unconditional (emergency / time-critical)
         if candidate.urgency >= 5:
             log.info("Urgency 5 — bypassing all checks")
             return True
 
+        # 1.5 User currently speaking — avoid talking over them
+        if _user_is_actively_speaking() and candidate.urgency < 4:
+            log.debug("Interrupt suppressed: user appears to be speaking")
+            return False
+
         # 2. Meeting detection — active video call
-        if _in_meeting():
+        if in_meeting:
             if candidate.urgency < 4:
                 log.debug("Interrupt suppressed: active meeting (urgency < 4)")
                 return False
             log.info("In meeting but urgency ≥ 4 — allowing")
 
         # 3. Flow state — deep focus
-        if _in_flow_state():
+        if in_flow:
             # In flow, raise the effective cooldown and minimum urgency
             if candidate.urgency < 3:
                 log.debug("Interrupt suppressed: flow state (urgency < 3)")
                 return False
+
+        # 3.5 Rapid context switching — avoid extra cognitive load
+        switch_count = db.get_recent_app_switch_count(window_seconds=90)
+        if switch_count >= 6 and candidate.urgency < 4:
+            log.debug(
+                f"Interrupt suppressed: rapid app switching ({switch_count} switches / 90s)"
+            )
+            return False
 
         # 4. Cooldown
         seconds_since_last = now - self._last_spoken_at
         required_cooldown = config.INTERRUPT_COOLDOWN
 
         if candidate.urgency >= 4:
-            required_cooldown = required_cooldown // 2   # high urgency: half cooldown
-        elif _in_flow_state():
+            required_cooldown = required_cooldown // 2  # high urgency: half cooldown
+        elif in_flow:
             required_cooldown = int(required_cooldown * 1.5)  # in flow: 1.5x cooldown
 
         if seconds_since_last < required_cooldown:
@@ -107,6 +122,7 @@ class InterruptDecisionEngine:
 
 # ─── State detectors ───────────────────────────────────────────────────────────
 
+
 def _in_meeting() -> bool:
     """Check if a meeting app has been active recently."""
     recent_apps = db.get_recent_apps(window_seconds=120)
@@ -126,7 +142,23 @@ def _in_flow_state() -> bool:
     return has_flow_app and not has_meeting
 
 
+def _user_is_actively_speaking(window_seconds: int = 12) -> bool:
+    """Heuristic: if we captured substantial transcript very recently, user is speaking."""
+    try:
+        ctx = db.get_recent_context(window_seconds)
+        transcripts = ctx.get("transcripts", [])
+        total_chars = 0
+        for row in transcripts:
+            text = (row.get("text") or "").strip()
+            if text:
+                total_chars += len(text)
+        return total_chars >= 30
+    except Exception:
+        return False
+
+
 # ─── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _is_similar(a: str, b: str, threshold: float = 0.6) -> bool:
     """

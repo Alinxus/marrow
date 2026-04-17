@@ -80,8 +80,7 @@ ACTION_CHAT_HISTORY_CHARS = int(os.environ.get("ACTION_CHAT_HISTORY_CHARS", "160
 
 # Proactive interruption policy (Omi-style gating)
 # 1 = very strict, 5 = very frequent
-PROACTIVE_FREQUENCY = int(os.environ.get("PROACTIVE_FREQUENCY", "3"))
-MAX_DAILY_INTERRUPTS = int(os.environ.get("MAX_DAILY_INTERRUPTS", "12"))
+PROACTIVE_FREQUENCY = int(os.environ.get("PROACTIVE_FREQUENCY", "4"))
 
 # Apps that signal deep-focus / flow state (interrupt less aggressively)
 FLOW_STATE_APPS = [
@@ -167,11 +166,15 @@ WAKE_WORD_ENABLED = os.environ.get("WAKE_WORD_ENABLED", "1") == "1"
 WAKE_WORDS = ["marrow", "hey marrow"]
 
 # Conversational mode
+CONVERSATION_ENABLED = os.environ.get("CONVERSATION_ENABLED", "1") == "1"
 CONVERSATION_MODE_TIMEOUT_SECONDS = int(
     os.environ.get("CONVERSATION_MODE_TIMEOUT_SECONDS", "30")
 )
 CONVERSATION_MAX_TURNS = int(os.environ.get("CONVERSATION_MAX_TURNS", "8"))
 CONVERSATION_MAX_TOKENS = int(os.environ.get("CONVERSATION_MAX_TOKENS", "260"))
+CONVERSATION_RESPONSE_STYLE = os.environ.get(
+    "CONVERSATION_RESPONSE_STYLE", "balanced"
+).lower()
 
 # Smart home (optional Home Assistant bridge)
 HOME_ASSISTANT_URL = os.environ.get("HOME_ASSISTANT_URL", "")
@@ -179,6 +182,40 @@ HOME_ASSISTANT_TOKEN = os.environ.get("HOME_ASSISTANT_TOKEN", "")
 
 # Audio capture - set to false if no microphone
 AUDIO_ENABLED = os.environ.get("AUDIO_ENABLED", "1") == "1"
+AUDIO_ACTIVE_CHUNK_SECONDS = int(os.environ.get("AUDIO_ACTIVE_CHUNK_SECONDS", "2"))
+AUDIO_MIN_TRANSCRIPT_CHARS = int(os.environ.get("AUDIO_MIN_TRANSCRIPT_CHARS", "3"))
+
+# Mission mode / orchestration
+MISSION_ENABLED = os.environ.get("MISSION_ENABLED", "1") == "1"
+MISSION_AUTO_VERIFY = os.environ.get("MISSION_AUTO_VERIFY", "1") == "1"
+MISSION_MAX_STEPS = int(os.environ.get("MISSION_MAX_STEPS", "8"))
+MISSION_STEP_TIMEOUT_SECONDS = int(os.environ.get("MISSION_STEP_TIMEOUT_SECONDS", "90"))
+MISSION_RECOVERY_ENABLED = os.environ.get("MISSION_RECOVERY_ENABLED", "1") == "1"
+
+# Overlay
+OVERLAY_ENABLED = (
+    os.environ.get("OVERLAY_ENABLED", "0" if UI_MODE == "orb" else "1") == "1"
+)
+OVERLAY_AUTO_HIDE_FULLSCREEN = (
+    os.environ.get("OVERLAY_AUTO_HIDE_FULLSCREEN", "1") == "1"
+)
+
+# Swarm / predictive / proactive
+SWARM_ENABLED = os.environ.get("SWARM_ENABLED", "1") == "1"
+SWARM_MAX_AGENTS = int(os.environ.get("SWARM_MAX_AGENTS", "3"))
+PREDICTIVE_ENABLED = os.environ.get("PREDICTIVE_ENABLED", "1") == "1"
+PREDICTIVE_INTERVAL_SECONDS = int(os.environ.get("PREDICTIVE_INTERVAL_SECONDS", "90"))
+PROACTIVE_SPEECH_ENABLED = os.environ.get("PROACTIVE_SPEECH_ENABLED", "1") == "1"
+PROACTIVE_SPEECH_MIN_URGENCY = int(os.environ.get("PROACTIVE_SPEECH_MIN_URGENCY", "2"))
+PROACTIVE_SPEECH_MIN_GAP_SECONDS = int(
+    os.environ.get("PROACTIVE_SPEECH_MIN_GAP_SECONDS", "30")
+)
+PROACTIVE_SIGNAL_DEDUP_SECONDS = int(
+    os.environ.get("PROACTIVE_SIGNAL_DEDUP_SECONDS", "180")
+)
+PROACTIVE_AUTO_SPEAK_MIN_URGENCY = int(
+    os.environ.get("PROACTIVE_AUTO_SPEAK_MIN_URGENCY", "2")
+)
 
 
 def get_browser_llm():

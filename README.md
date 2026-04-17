@@ -129,8 +129,7 @@ SCREENSHOT_INTERVAL=3
 CONTEXT_WINDOW_SECONDS=120
 
 # Proactive policy
-PROACTIVE_FREQUENCY=3
-MAX_DAILY_INTERRUPTS=12
+PROACTIVE_FREQUENCY=4
 
 # UI mode
 UI_MODE=orb
@@ -206,6 +205,18 @@ You can ask Marrow (or call tool) to run:
 - `open_permission_panels`
 
 This checks core runtime capabilities (screen capture, microphone, hotkey, and platform-specific access checks) and reports missing pieces.
+
+From chat/command bar, you can also run:
+
+- `/doctor` for consolidated runtime + permissions diagnostics
+- `/chatstyle <short|balanced|detailed|status>` to tune conversational response length/style
+- `/proactive <quiet|normal|talkative|status>` to tune ambient speaking frequency
+
+Ambient/proactive tuning:
+
+- `PROACTIVE_SPEECH_MIN_URGENCY` (default `4`)
+- `PROACTIVE_SPEECH_MIN_GAP_SECONDS` (default `60`)
+- `PROACTIVE_SIGNAL_DEDUP_SECONDS` (default `420`)
 
 ## Context Awareness Behavior
 

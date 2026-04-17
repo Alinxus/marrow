@@ -50,6 +50,7 @@ MEMORY_USER_ID = "marrow_user"
 
 # ─── LRU Cache ────────────────────────────────────────────────────────────────
 
+
 class MemoryCache:
     def __init__(self, max_size: int = 100, ttl: int = 30):
         self._cache: OrderedDict = OrderedDict()
@@ -92,6 +93,7 @@ _profile_cache = MemoryCache(max_size=10, ttl=120)
 
 
 # ─── RetainDB HTTP Client ─────────────────────────────────────────────────────
+
 
 class RetainDBClient:
     """
@@ -183,28 +185,33 @@ class RetainDBClient:
         metadata: dict = None,
     ) -> dict:
         """POST /v1/memory — store a single memory."""
-        return await self._post("/memory", {
-            "project": self.project,
-            "user_id": MEMORY_USER_ID,
-            "session_id": session_id or f"session_{int(time.time())}",
-            "content": content,
-            "memory_type": memory_type,
-            "write_mode": "async",
-            **({"metadata": metadata} if metadata else {}),
-        })
+        return await self._post(
+            "/memory",
+            {
+                "project": self.project,
+                "user_id": MEMORY_USER_ID,
+                "session_id": session_id or f"session_{int(time.time())}",
+                "content": content,
+                "memory_type": memory_type,
+                "write_mode": "async",
+                **({"metadata": metadata} if metadata else {}),
+            },
+        )
 
     async def bulk_memory(self, memories: list[dict]) -> dict:
         """POST /v1/memory/bulk — store many memories in one call."""
         items = []
         for m in memories:
-            items.append({
-                "project": self.project,
-                "user_id": MEMORY_USER_ID,
-                "session_id": m.get("session_id", f"bulk_{int(time.time())}"),
-                "content": m["content"],
-                "memory_type": m.get("memory_type", "factual"),
-                **({"metadata": m["metadata"]} if m.get("metadata") else {}),
-            })
+            items.append(
+                {
+                    "project": self.project,
+                    "user_id": MEMORY_USER_ID,
+                    "session_id": m.get("session_id", f"bulk_{int(time.time())}"),
+                    "content": m["content"],
+                    "memory_type": m.get("memory_type", "factual"),
+                    **({"metadata": m["metadata"]} if m.get("metadata") else {}),
+                }
+            )
         return await self._post("/memory/bulk", {"memories": items})
 
     async def ingest_session(
@@ -220,13 +227,17 @@ class RetainDBClient:
 
         events format: [{"role": "user"|"assistant"|"system", "content": "..."}]
         """
-        return await self._post("/memory/ingest/session", {
-            "project": self.project,
-            "user_id": MEMORY_USER_ID,
-            "session_id": session_id,
-            "events": events,
-            **({"metadata": metadata} if metadata else {}),
-        }, timeout=30.0)
+        return await self._post(
+            "/memory/ingest/session",
+            {
+                "project": self.project,
+                "user_id": MEMORY_USER_ID,
+                "session_id": session_id,
+                "events": events,
+                **({"metadata": metadata} if metadata else {}),
+            },
+            timeout=30.0,
+        )
 
     async def extract_memory(self, text: str, context: str = "") -> dict:
         """
@@ -245,12 +256,16 @@ class RetainDBClient:
 
     async def extract_session(self, session_id: str, events: list[dict]) -> dict:
         """POST /v1/memory/extract/session — extract from session without storing."""
-        return await self._post("/memory/extract/session", {
-            "project": self.project,
-            "user_id": MEMORY_USER_ID,
-            "session_id": session_id,
-            "events": events,
-        }, timeout=20.0)
+        return await self._post(
+            "/memory/extract/session",
+            {
+                "project": self.project,
+                "user_id": MEMORY_USER_ID,
+                "session_id": session_id,
+                "events": events,
+            },
+            timeout=20.0,
+        )
 
     async def search_memory(
         self,
@@ -275,7 +290,9 @@ class RetainDBClient:
         """GET /v1/memory/:memoryId — fetch a single memory."""
         return await self._get(f"/memory/{memory_id}")
 
-    async def update_memory(self, memory_id: str, content: str, metadata: dict = None) -> dict:
+    async def update_memory(
+        self, memory_id: str, content: str, metadata: dict = None
+    ) -> dict:
         """PUT /v1/memory/:memoryId — update a memory."""
         body: dict = {"content": content}
         if metadata:
@@ -319,16 +336,21 @@ class RetainDBClient:
         Ask a question about the user profile. RetainDB answers from
         accumulated memories — like querying a personal knowledge graph.
         """
-        return await self._post(f"/memory/profile/{MEMORY_USER_ID}/ask", {
-            "project": self.project,
-            "question": question,
-        })
+        return await self._post(
+            f"/memory/profile/{MEMORY_USER_ID}/ask",
+            {
+                "project": self.project,
+                "question": question,
+            },
+        )
 
     # ── Memory Graph ──────────────────────────────────────────────────────────
 
     async def get_graph(self) -> dict:
         """GET /v1/memory/graph — full memory graph for the user."""
-        return await self._get("/memory/graph", {"user_id": MEMORY_USER_ID, "project": self.project})
+        return await self._get(
+            "/memory/graph", {"user_id": MEMORY_USER_ID, "project": self.project}
+        )
 
     async def get_conversation_graph(self, session_id: str) -> dict:
         """GET /v1/memory/graph/conversation/:sessionId."""
@@ -347,22 +369,29 @@ class RetainDBClient:
         Advanced search: combines semantic, lexical, temporal, phonetic,
         and graph traversal. Best retrieval quality in the API.
         """
-        return await self._post("/oracle/search", {
-            "project": self.project,
-            "user_id": MEMORY_USER_ID,
-            "query": query,
-            "limit": limit,
-            "include_graph": include_graph,
-        }, timeout=20.0)
+        return await self._post(
+            "/oracle/search",
+            {
+                "project": self.project,
+                "user_id": MEMORY_USER_ID,
+                "query": query,
+                "limit": limit,
+                "include_graph": include_graph,
+            },
+            timeout=20.0,
+        )
 
     async def semantic_search(self, query: str, limit: int = 10) -> list:
         """POST /v1/search/semantic — pure vector search."""
-        resp = await self._post("/search/semantic", {
-            "project": self.project,
-            "user_id": MEMORY_USER_ID,
-            "query": query,
-            "limit": limit,
-        })
+        resp = await self._post(
+            "/search/semantic",
+            {
+                "project": self.project,
+                "user_id": MEMORY_USER_ID,
+                "query": query,
+                "limit": limit,
+            },
+        )
         return resp.get("results", [])
 
     # ── Context ───────────────────────────────────────────────────────────────
@@ -390,11 +419,14 @@ class RetainDBClient:
 
     async def share_context(self, session_id: str, expires_in: int = 3600) -> dict:
         """POST /v1/context/share — share context externally."""
-        return await self._post("/context/share", {
-            "project": self.project,
-            "session_id": session_id,
-            "expires_in": expires_in,
-        })
+        return await self._post(
+            "/context/share",
+            {
+                "project": self.project,
+                "session_id": session_id,
+                "expires_in": expires_in,
+            },
+        )
 
     # ── Learn ─────────────────────────────────────────────────────────────────
 
@@ -404,11 +436,15 @@ class RetainDBClient:
         Teach the system verified facts directly.
         facts: [{"content": "...", "topic": "...", "confidence": 0-1}]
         """
-        return await self._post("/learn", {
-            "project": self.project,
-            "user_id": MEMORY_USER_ID,
-            "facts": facts,
-        }, timeout=20.0)
+        return await self._post(
+            "/learn",
+            {
+                "project": self.project,
+                "user_id": MEMORY_USER_ID,
+                "facts": facts,
+            },
+            timeout=20.0,
+        )
 
     # ── Projects ──────────────────────────────────────────────────────────────
 
@@ -419,10 +455,13 @@ class RetainDBClient:
 
     async def create_project(self, name: str, description: str = "") -> dict:
         """POST /v1/projects."""
-        return await self._post("/projects", {
-            "name": name,
-            "description": description,
-        })
+        return await self._post(
+            "/projects",
+            {
+                "name": name,
+                "description": description,
+            },
+        )
 
     async def resolve_project(self, name: str) -> dict:
         """GET /v1/projects/resolve — get project by name."""
@@ -432,24 +471,35 @@ class RetainDBClient:
         """GET /v1/projects/:id."""
         return await self._get(f"/projects/{project_id}")
 
-    async def ingest_project(self, project_id: str, content: str, source: str = "screen") -> dict:
+    async def ingest_project(
+        self, project_id: str, content: str, source: str = "screen"
+    ) -> dict:
         """POST /v1/projects/:projectId/ingest — ingest content into a project."""
-        return await self._post(f"/projects/{project_id}/ingest", {
-            "content": content,
-            "source": source,
-        }, timeout=30.0)
+        return await self._post(
+            f"/projects/{project_id}/ingest",
+            {
+                "content": content,
+                "source": source,
+            },
+            timeout=30.0,
+        )
 
     async def get_project_sources(self, project_id: str) -> list:
         """GET /v1/projects/:projectId/sources."""
         resp = await self._get(f"/projects/{project_id}/sources")
         return resp.get("sources", [])
 
-    async def add_project_source(self, project_id: str, source_url: str, source_type: str = "text") -> dict:
+    async def add_project_source(
+        self, project_id: str, source_url: str, source_type: str = "text"
+    ) -> dict:
         """POST /v1/projects/:projectId/add_source."""
-        return await self._post(f"/projects/{project_id}/add_source", {
-            "url": source_url,
-            "type": source_type,
-        })
+        return await self._post(
+            f"/projects/{project_id}/add_source",
+            {
+                "url": source_url,
+                "type": source_type,
+            },
+        )
 
     # ── Files ─────────────────────────────────────────────────────────────────
 
@@ -474,7 +524,9 @@ class RetainDBClient:
 
     async def list_files(self, prefix: str = "", scope: str = "USER") -> list:
         """GET /v1/files."""
-        resp = await self._get("/files", {"prefix": prefix, "scope": scope, "limit": 50})
+        resp = await self._get(
+            "/files", {"prefix": prefix, "scope": scope, "limit": 50}
+        )
         return resp.get("files", [])
 
     async def ingest_file(self, file_id: str) -> dict:
@@ -495,7 +547,9 @@ class RetainDBClient:
         """GET /health — check if API is reachable."""
         try:
             http = await self._get_http()
-            resp = await http.get(f"{self.base_url.rsplit('/v1', 1)[0]}/health", timeout=5.0)
+            resp = await http.get(
+                f"{self.base_url.rsplit('/v1', 1)[0]}/health", timeout=5.0
+            )
             return resp.status_code == 200
         except Exception:
             return False
@@ -533,14 +587,19 @@ def _bg(coro) -> None:
 
 # ─── Local fast ops ───────────────────────────────────────────────────────────
 
-def _insert_local_conversation(ts: float, role: str, content: str, context: str = "") -> None:
+
+def _insert_local_conversation(
+    ts: float, role: str, content: str, context: str = ""
+) -> None:
     try:
         db.insert_conversation(ts, role, content[:2000], context)
     except Exception as e:
         log.debug(f"Local conv insert: {e}")
 
 
-def _insert_local_action(ts: float, task: str, result: str, tool: str, success: int) -> None:
+def _insert_local_action(
+    ts: float, task: str, result: str, tool: str, success: int
+) -> None:
     try:
         db.insert_action(ts, task, result[:500], tool, success)
     except Exception as e:
@@ -556,6 +615,7 @@ def _insert_local_observation(obs_type: str, content: str, source: str) -> bool:
 
 
 # ─── Public memory API ────────────────────────────────────────────────────────
+
 
 async def memory_add(content: str, memory_type: str = "factual") -> str:
     """Add a memory — instant local write + async cloud."""
@@ -589,15 +649,19 @@ async def memory_search(query: str, use_oracle: bool = False) -> str:
                 cloud_results = resp.get("results", [])
             else:
                 cloud_results = await client.search_memory(query, limit=8)
-            results.extend([
-                f"[{r.get('memory_type', 'mem')}] {r.get('content', '')[:200]}"
-                for r in cloud_results
-            ])
+            results.extend(
+                [
+                    f"[{r.get('memory_type', 'mem')}] {r.get('content', '')[:200]}"
+                    for r in cloud_results
+                ]
+            )
         except Exception as e:
             log.debug(f"Cloud search error: {e}")
 
     # Local FTS5 fallback / supplement
     if not results:
+        obs = db.search_observations(query, 8)
+        results.extend([f"[observed] {o['content'][:170]}" for o in obs])
         convs = db.search_conversations(query, 5)
         results.extend([f"[conv] {c['content'][:150]}" for c in convs])
         acts = db.search_actions(query, 5)
@@ -640,7 +704,9 @@ async def memory_get_profile() -> str:
                 # Format RetainDB's synthesized profile
                 lines = ["## User Profile (RetainDB)"]
                 if model.get("preferences"):
-                    lines.append(f"Preferences: {json.dumps(model['preferences'])[:300]}")
+                    lines.append(
+                        f"Preferences: {json.dumps(model['preferences'])[:300]}"
+                    )
                 if model.get("goals"):
                     lines.append(f"Goals: {json.dumps(model['goals'])[:200]}")
                 if model.get("working_style"):
@@ -667,17 +733,21 @@ async def memory_get_profile() -> str:
     return output[:4000]
 
 
-async def memory_record_action(task: str, result: str, tool: str, success: bool = True) -> str:
+async def memory_record_action(
+    task: str, result: str, tool: str, success: bool = True
+) -> str:
     """Record an action — instant local + async cloud."""
     ts = time.time()
     _insert_local_action(ts, task, result, tool, 1 if success else 0)
     _profile_cache.invalidate("profile")
     client = get_memory_client()
     if client:
-        _bg(client.add_memory(
-            f"[ACTION] {task} → {result[:200]} (tool: {tool}, success: {success})",
-            "event",
-        ))
+        _bg(
+            client.add_memory(
+                f"[ACTION] {task} → {result[:200]} (tool: {tool}, success: {success})",
+                "event",
+            )
+        )
     return "[action recorded]"
 
 
@@ -693,7 +763,9 @@ async def memory_record_conversation(role: str, content: str, context: str = "")
     return "[conversation recorded]"
 
 
-async def memory_record_observation(content: str, obs_type: str = "fact", source: str = "screen") -> str:
+async def memory_record_observation(
+    content: str, obs_type: str = "fact", source: str = "screen"
+) -> str:
     """Record observation with dedup — instant local + async extraction."""
     inserted = _insert_local_observation(obs_type, content, source)
     if inserted:
@@ -749,11 +821,15 @@ async def memory_learn(fact: str, topic: str = "", confidence: float = 0.9) -> s
     client = get_memory_client()
     if not client:
         return await memory_add(fact, "factual")
-    result = await client.learn([{
-        "content": fact,
-        "topic": topic or "general",
-        "confidence": confidence,
-    }])
+    result = await client.learn(
+        [
+            {
+                "content": fact,
+                "topic": topic or "general",
+                "confidence": confidence,
+            }
+        ]
+    )
     if result.get("error"):
         return f"[error] {result['error']}"
     return f"[learned] {fact[:80]}"
@@ -767,7 +843,9 @@ async def memory_get_context(query: str, session_id: str = None) -> str:
     client = get_memory_client()
     if not client:
         return await memory_search(query)
-    resp = await client.query_context(query, session_id=session_id, include_profile=True)
+    resp = await client.query_context(
+        query, session_id=session_id, include_profile=True
+    )
     context = resp.get("context") or resp.get("content") or ""
     if not context:
         return await memory_search(query)
