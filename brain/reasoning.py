@@ -563,10 +563,18 @@ async def reasoning_loop(
 
             high_signal_context = build_high_signal_context()
 
+            # Proactive context: calendar, focus state, distraction, EOD
+            proactive_context = ""
+            try:
+                from brain.proactive import get_proactive_context
+                proactive_context = get_proactive_context()
+            except Exception:
+                pass
+
             # Assemble full context for reasoning
             full_context = "\n\n".join(
                 filter(
-                    None, [deep_world, high_signal_context, memory_context, context_str]
+                    None, [deep_world, proactive_context, high_signal_context, memory_context, context_str]
                 )
             )
 

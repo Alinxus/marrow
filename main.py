@@ -418,6 +418,16 @@ async def _main_async() -> None:
                 await asyncio.sleep(5)
         log.info(f"{name} stopped.")
 
+    # ── Proactive loop ────────────────────────────────────────────────────
+    async def _proactive_loop():
+        try:
+            from brain.proactive import proactive_loop
+            await proactive_loop()
+        except Exception as e:
+            log.warning(f"Proactive loop unavailable: {e}")
+            while not _shutdown_event.is_set():
+                await asyncio.sleep(60)
+
     # ── Claim verifier loop ───────────────────────────────────────────────
     async def _claim_verifier_loop():
         try:
@@ -452,6 +462,7 @@ async def _main_async() -> None:
         asyncio.create_task(_supervised("wiki_update", wiki_update_loop)),
         asyncio.create_task(_supervised("agi", agi_loop)),
         asyncio.create_task(_supervised("claim_verifier", _claim_verifier_loop)),
+        asyncio.create_task(_supervised("proactive", _proactive_loop)),
         asyncio.create_task(_stats_loop()),
         asyncio.create_task(_shutdown_event.wait()),
     ]
