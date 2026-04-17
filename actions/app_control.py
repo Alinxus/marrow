@@ -67,8 +67,11 @@ public class Win32 {
 def _ps_run(ps: str, timeout: int = 10) -> str:
     result = subprocess.run(
         ["powershell", "-NoProfile", "-Command", ps],
-        capture_output=True, text=True, timeout=timeout,
-        encoding="utf-8", errors="replace",
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        encoding="utf-8",
+        errors="replace",
     )
     out = (result.stdout + result.stderr).strip()
     return out or "[no output]"
@@ -78,7 +81,9 @@ async def window_focus(title: str) -> str:
     """Focus a window by title (partial match)."""
     try:
         escaped = title.replace("'", "''").replace('"', '`"')
-        ps = _WIN32_TYPE + f"""
+        ps = (
+            _WIN32_TYPE
+            + f"""
 $proc = Get-Process | Where-Object {{$_.MainWindowTitle -like "*{escaped}*"}} | Select-Object -First 1
 if ($proc -and $proc.MainWindowHandle -ne 0) {{
     [void][Win32]::SetForegroundWindow($proc.MainWindowHandle)
@@ -87,6 +92,7 @@ if ($proc -and $proc.MainWindowHandle -ne 0) {{
     Write-Output "Window not found: {escaped}"
 }}
 """
+        )
         return _ps_run(ps)
     except Exception as e:
         return f"[error] {e}"
@@ -96,13 +102,16 @@ async def window_move(title: str, x: int, y: int) -> str:
     """Move window to position."""
     try:
         escaped = title.replace("'", "''").replace('"', '`"')
-        ps = _WIN32_TYPE + f"""
+        ps = (
+            _WIN32_TYPE
+            + f"""
 $proc = Get-Process | Where-Object {{$_.MainWindowTitle -like "*{escaped}*"}} | Select-Object -First 1
 if ($proc -and $proc.MainWindowHandle -ne 0) {{
     [void][Win32]::MoveWindow($proc.MainWindowHandle, {x}, {y}, 800, 600, $true)
     Write-Output "Moved to {x}, {y}"
 }} else {{ Write-Output "Window not found" }}
 """
+        )
         return _ps_run(ps)
     except Exception as e:
         return f"[error] {e}"
@@ -112,7 +121,9 @@ async def window_resize(title: str, width: int, height: int) -> str:
     """Resize window."""
     try:
         escaped = title.replace("'", "''").replace('"', '`"')
-        ps = _WIN32_TYPE + f"""
+        ps = (
+            _WIN32_TYPE
+            + f"""
 $proc = Get-Process | Where-Object {{$_.MainWindowTitle -like "*{escaped}*"}} | Select-Object -First 1
 if ($proc -and $proc.MainWindowHandle -ne 0) {{
     $r = $proc.MainWindowHandle
@@ -121,6 +132,7 @@ if ($proc -and $proc.MainWindowHandle -ne 0) {{
     Write-Output "Resized to {width}x{height}"
 }} else {{ Write-Output "Window not found" }}
 """
+        )
         return _ps_run(ps)
     except Exception as e:
         return f"[error] {e}"
@@ -130,13 +142,16 @@ async def window_minimize(title: str) -> str:
     """Minimize window."""
     try:
         escaped = title.replace("'", "''").replace('"', '`"')
-        ps = _WIN32_TYPE + f"""
+        ps = (
+            _WIN32_TYPE
+            + f"""
 $proc = Get-Process | Where-Object {{$_.MainWindowTitle -like "*{escaped}*"}} | Select-Object -First 1
 if ($proc -and $proc.MainWindowHandle -ne 0) {{
     [void][Win32]::ShowWindow($proc.MainWindowHandle, 6)
     Write-Output "Minimized: {escaped}"
 }} else {{ Write-Output "Not found: {escaped}" }}
 """
+        )
         return _ps_run(ps)
     except Exception as e:
         return f"[error] {e}"
@@ -146,13 +161,16 @@ async def window_maximize(title: str) -> str:
     """Maximize window."""
     try:
         escaped = title.replace("'", "''").replace('"', '`"')
-        ps = _WIN32_TYPE + f"""
+        ps = (
+            _WIN32_TYPE
+            + f"""
 $proc = Get-Process | Where-Object {{$_.MainWindowTitle -like "*{escaped}*"}} | Select-Object -First 1
 if ($proc -and $proc.MainWindowHandle -ne 0) {{
     [void][Win32]::ShowWindow($proc.MainWindowHandle, 3)
     Write-Output "Maximized: {escaped}"
 }} else {{ Write-Output "Not found: {escaped}" }}
 """
+        )
         return _ps_run(ps)
     except Exception as e:
         return f"[error] {e}"
@@ -201,7 +219,9 @@ async def app_launch(path: str, arguments: str = "") -> str:
         return f"Launched: {path}"
     except FileNotFoundError:
         # Try via PowerShell Start-Process as fallback
-        ps = f'Start-Process "{path}"' + (f' -ArgumentList "{arguments}"' if arguments else "")
+        ps = f'Start-Process "{path}"' + (
+            f' -ArgumentList "{arguments}"' if arguments else ""
+        )
         return _ps_run(ps)
     except Exception as e:
         return f"[error] {e}"
@@ -242,12 +262,35 @@ async def app_exists(name: str) -> bool:
     try:
         import psutil
 
+        target = (name or "").lower().replace(".exe", "")
         for proc in psutil.process_iter(["name"]):
-            if proc.info["name"].lower() == name.lower():
+            pname = (proc.info.get("name") or "").lower().replace(".exe", "")
+            if target and (target == pname or target in pname or pname in target):
                 return True
         return False
     except:
         return False
+
+
+async def app_launch_verified(path: str, arguments: str = "") -> str:
+    """Launch app and verify process appears."""
+    out = await app_launch(path, arguments)
+    app_name = Path(path).name.replace(".exe", "")
+    for _ in range(8):
+        if await app_exists(app_name):
+            return f"{out}\nVerified: process '{app_name}' is running"
+        await asyncio.sleep(0.35)
+    return f"{out}\n[warning] Could not verify process '{app_name}' appeared"
+
+
+async def window_focus_verified(title: str) -> str:
+    """Focus a window and verify by checking window list contains the title."""
+    out = await window_focus(title)
+    await asyncio.sleep(0.25)
+    listing = await window_list()
+    if title.lower() in (listing or "").lower():
+        return f"{out}\nVerified: window match exists in open windows"
+    return f"{out}\n[warning] Focus verification uncertain for title '{title}'"
 
 
 # ─── Mouse Control ───────────────────────────────────────────────────────────
@@ -256,6 +299,7 @@ async def app_exists(name: str) -> bool:
 def _try_pyautogui():
     try:
         import pyautogui
+
         return pyautogui
     except ImportError:
         return None
@@ -270,6 +314,7 @@ async def mouse_move(x: int, y: int) -> str:
             return f"Moved mouse to {x}, {y}"
         # Fallback: ctypes SendInput
         import ctypes
+
         ctypes.windll.user32.SetCursorPos(x, y)
         return f"Moved mouse to {x}, {y}"
     except Exception as e:
@@ -288,6 +333,7 @@ async def mouse_click(x: int = None, y: int = None, button: str = "left") -> str
             return f"Clicked {button}"
         # Fallback: ctypes mouse_event
         import ctypes
+
         MOUSEEVENTF_MOVE = 0x0001
         MOUSEEVENTF_LEFTDOWN = 0x0002
         MOUSEEVENTF_LEFTUP = 0x0004
@@ -317,6 +363,7 @@ async def mouse_double_click(x: int = None, y: int = None) -> str:
                 pg.doubleClick()
             return "Double clicked"
         import ctypes
+
         if x is not None and y is not None:
             ctypes.windll.user32.SetCursorPos(x, y)
         for _ in range(2):
@@ -336,6 +383,7 @@ async def mouse_drag(x1: int, y1: int, x2: int, y2: int) -> str:
             pg.dragTo(x2, y2, duration=0.3)
             return f"Dragged from ({x1}, {y1}) to ({x2}, {y2})"
         import ctypes, time
+
         ctypes.windll.user32.SetCursorPos(x1, y1)
         time.sleep(0.05)
         ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)  # left down
@@ -360,7 +408,7 @@ async def keyboard_type(text: str) -> str:
             return f"Typed: {text[:50]}"
         # Fallback: PowerShell SendKeys (for ASCII text)
         safe = text.replace("'", "''").replace("{", "{{").replace("}", "}}")
-        ps = f'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'{safe}\')'
+        ps = f"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{safe}')"
         _ps_run(ps)
         return f"Typed: {text[:50]}"
     except Exception as e:

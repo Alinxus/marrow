@@ -75,7 +75,7 @@ def _check_wake_word(text: str) -> bool:
 
     for wake_word in WAKE_WORDS:
         # Word-boundary match: avoids false triggers on "borrow", "sorrow", etc.
-        pattern = r'\b' + re.escape(wake_word) + r'\b'
+        pattern = r"\b" + re.escape(wake_word) + r"\b"
         if re.search(pattern, text_lower):
             log.info(f"Wake word detected: {text[:50]}")
             return True
@@ -107,12 +107,19 @@ def _select_input_device():
 # Callback for wake word activation
 _wake_word_callback = None
 _mac_mic_perm_warned = False
+_conversation_turn_callback = None
 
 
 def set_wake_word_callback(callback):
     """Set callback for when wake word is detected."""
     global _wake_word_callback
     _wake_word_callback = callback
+
+
+def set_conversation_turn_callback(callback):
+    """Set callback for conversation turn handling while conversation mode is active."""
+    global _conversation_turn_callback
+    _conversation_turn_callback = callback
 
 
 class AudioCaptureService:
@@ -323,6 +330,23 @@ class AudioCaptureService:
 
         if _check_wake_word(text) and _wake_word_callback and self._loop:
             asyncio.run_coroutine_threadsafe(_wake_word_callback(text), self._loop)
+            return
+
+        # If conversation mode is active, route utterance directly without wake word.
+        try:
+            from brain import conversation
+            from voice.speak import cancel_speaking
+
+            if conversation.is_active() and _conversation_turn_callback and self._loop:
+                # Any utterance in active conversation extends session timeout.
+                conversation.touch_session()
+                # User is speaking while Marrow may be speaking: barge-in support.
+                cancel_speaking()
+                asyncio.run_coroutine_threadsafe(
+                    _conversation_turn_callback(text), self._loop
+                )
+        except Exception:
+            pass
 
     async def _run_deepgram(self) -> None:
         """

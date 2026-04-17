@@ -48,15 +48,60 @@ _mac_screen_perm_warned: bool = False
 
 _OSASCRIPT_WINDOW = (
     'tell application "System Events"\n'
-    '  set fp to first process whose frontmost is true\n'
-    '  set appN to name of fp\n'
+    "  set fp to first process whose frontmost is true\n"
+    "  set appN to name of fp\n"
     '  set winT to ""\n'
-    '  try\n'
-    '    set winT to name of front window of fp\n'
-    '  end try\n'
+    "  try\n"
+    "    set winT to name of front window of fp\n"
+    "  end try\n"
     '  return appN & "|" & winT\n'
-    'end tell'
+    "end tell"
 )
+
+_OSASCRIPT_CHROME_URL = (
+    'tell application "Google Chrome"\n'
+    '  if not (exists front window) then return ""\n'
+    "  try\n"
+    "    return URL of active tab of front window\n"
+    "  on error\n"
+    '    return ""\n'
+    "  end try\n"
+    "end tell"
+)
+
+_OSASCRIPT_SAFARI_URL = (
+    'tell application "Safari"\n'
+    '  if not (exists front document) then return ""\n'
+    "  try\n"
+    "    return URL of front document\n"
+    "  on error\n"
+    '    return ""\n'
+    "  end try\n"
+    "end tell"
+)
+
+
+def _get_browser_url_mac(app_name: str) -> str:
+    try:
+        script = None
+        if "chrome" in app_name:
+            script = _OSASCRIPT_CHROME_URL
+        elif "safari" in app_name:
+            script = _OSASCRIPT_SAFARI_URL
+        if not script:
+            return ""
+
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            return (result.stdout or "").strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _get_active_window_mac() -> tuple[str, str, str]:
@@ -73,8 +118,11 @@ def _get_active_window_mac() -> tuple[str, str, str]:
             parts = out.split("|", 1)
             app_name = parts[0].strip().lower() if parts else "unknown"
             window_title = parts[1].strip() if len(parts) > 1 else "unknown"
-            # Trim common macOS suffixes
-            return app_name, window_title, ""
+            focused = ""
+            url = _get_browser_url_mac(app_name)
+            if url:
+                focused = f"[URL] {url}"
+            return app_name, window_title, focused
     except Exception as e:
         log.debug(f"macOS window detection failed: {e}")
     return "unknown", "unknown", ""
@@ -110,6 +158,20 @@ def _get_active_window() -> tuple[str, str, str]:
         if focused and focused.Name:
             ctrl_type = focused.ControlTypeName or "Element"
             focused_context = f"[Focused: {ctrl_type}] {focused.Name}"
+
+        # Browser URL extraction (Windows accessibility hint)
+        if app_name in ("chrome", "msedge", "brave", "firefox"):
+            try:
+                root = win
+                edit = root.EditControl(foundIndex=1)
+                if edit and edit.Name:
+                    candidate = edit.Name.strip()
+                    if candidate.startswith("http") or "." in candidate:
+                        focused_context = (
+                            (focused_context + "\n") if focused_context else ""
+                        ) + f"[URL] {candidate[:240]}"
+            except Exception:
+                pass
 
         return app_name, window_title, focused_context
 
@@ -337,7 +399,9 @@ async def screen_capture_loop() -> None:
                     from brain.context_awareness import process_screen_signals
 
                     # Pull the most recent audio transcript to feed claim detection
-                    recent_transcripts = db.get_recent_context(30).get("transcripts", [])
+                    recent_transcripts = db.get_recent_context(30).get(
+                        "transcripts", []
+                    )
                     recent_audio = " ".join(
                         t.get("text", "") for t in recent_transcripts[-3:]
                     )

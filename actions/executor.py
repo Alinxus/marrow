@@ -363,6 +363,15 @@ MARROW_TOOLS = [
         },
     },
     {
+        "name": "window_focus_verified",
+        "description": "Focus a window by title (partial match) and verify target presence.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        },
+    },
+    {
         "name": "window_move",
         "description": "Move window to position",
         "input_schema": {
@@ -426,12 +435,47 @@ MARROW_TOOLS = [
         },
     },
     {
+        "name": "app_launch_verified",
+        "description": "Launch an application and verify it started.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "arguments": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
         "name": "app_close",
         "description": "Close an application by name",
         "input_schema": {
             "type": "object",
             "properties": {"name": {"type": "string"}},
             "required": ["name"],
+        },
+    },
+    # Smart home / device bridge
+    {
+        "name": "smart_home_call",
+        "description": "Call Home Assistant service (domain.service), e.g. light.turn_on",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "service": {"type": "string"},
+                "entity_id": {"type": "string"},
+                "payload_json": {
+                    "type": "string",
+                    "description": "Optional JSON object string for service payload",
+                },
+            },
+            "required": ["service"],
+        },
+    },
+    {
+        "name": "set_system_volume",
+        "description": "Set local system output volume percentage (0-100).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"percent": {"type": "integer"}},
+            "required": ["percent"],
         },
     },
     # Mouse control
@@ -1200,25 +1244,35 @@ def _get_emails_mac(hours: int = 24, max_count: int = 10) -> str:
     """Fetch emails on macOS via AppleScript (Mail.app) or himalaya fallback."""
     script = (
         f'tell application "Mail"\n'
-        f'  set msgs to (messages of inbox whose read status is false)\n'
+        f"  set msgs to (messages of inbox whose read status is false)\n"
         f'  set result to ""\n'
-        f'  set n to 0\n'
-        f'  repeat with m in msgs\n'
-        f'    if n >= {max_count} then exit repeat\n'
+        f"  set n to 0\n"
+        f"  repeat with m in msgs\n"
+        f"    if n >= {max_count} then exit repeat\n"
         f'    set result to result & (sender of m) & ": " & (subject of m) & "\\n"\n'
-        f'    set n to n + 1\n'
-        f'  end repeat\n'
+        f"    set n to n + 1\n"
+        f"  end repeat\n"
         f'  if result is "" then return "No unread emails"\n'
-        f'  return result\n'
-        f'end tell'
+        f"  return result\n"
+        f"end tell"
     )
     result = _terminal_exec(f"osascript -e '{script}'", timeout=10)
-    if result and "[error" not in result.lower() and "not running" not in result.lower():
+    if (
+        result
+        and "[error" not in result.lower()
+        and "not running" not in result.lower()
+    ):
         return f"Unread emails (Mail.app):\n{result}"
 
     # Fallback: himalaya CLI
-    himalaya = _terminal_exec(f"himalaya envelope list --max-width 80 --limit {max_count}", timeout=10)
-    if himalaya and "[error]" not in himalaya.lower() and "command not found" not in himalaya.lower():
+    himalaya = _terminal_exec(
+        f"himalaya envelope list --max-width 80 --limit {max_count}", timeout=10
+    )
+    if (
+        himalaya
+        and "[error]" not in himalaya.lower()
+        and "command not found" not in himalaya.lower()
+    ):
         return f"Emails (himalaya):\n{himalaya}"
 
     return (
@@ -1293,21 +1347,23 @@ def _get_calendar_mac(days: int = 1) -> str:
     script = (
         'tell application "Calendar"\n'
         '  set result to ""\n'
-        '  repeat with c in calendars\n'
-        '    set evts to (events of c whose start date >= (current date) and start date <= ((current date) + '
-        f'{days * 86400}))\n'
-        '    repeat with e in evts\n'
+        "  repeat with c in calendars\n"
+        "    set evts to (events of c whose start date >= (current date) and start date <= ((current date) + "
+        f"{days * 86400}))\n"
+        "    repeat with e in evts\n"
         '      set result to result & (summary of e) & " @ " & ((start date of e) as string) & "\\n"\n'
-        '    end repeat\n'
-        '  end repeat\n'
+        "    end repeat\n"
+        "  end repeat\n"
         '  if result is "" then return "No events"\n'
-        '  return result\n'
-        'end tell'
+        "  return result\n"
+        "end tell"
     )
     result = _terminal_exec(f"osascript << 'EOF'\n{script}\nEOF", timeout=10)
     if result and "[error" not in result.lower():
         return f"Calendar (Calendar.app):\n{result}"
-    return "[Calendar access unavailable] Open Calendar.app and ensure events are synced."
+    return (
+        "[Calendar access unavailable] Open Calendar.app and ensure events are synced."
+    )
 
 
 def _get_calendar(days: int = 1) -> str:
@@ -1896,6 +1952,10 @@ async def _async_handle_tool_call(
         from actions import app_control as app_mod
 
         return await app_mod.window_focus(tool_input["title"])
+    elif tool_name == "window_focus_verified":
+        from actions import app_control as app_mod
+
+        return await app_mod.window_focus_verified(tool_input["title"])
     elif tool_name == "window_move":
         from actions import app_control as app_mod
 
@@ -1928,10 +1988,40 @@ async def _async_handle_tool_call(
         return await app_mod.app_launch(
             tool_input["path"], tool_input.get("arguments", "")
         )
+    elif tool_name == "app_launch_verified":
+        from actions import app_control as app_mod
+
+        return await app_mod.app_launch_verified(
+            tool_input["path"], tool_input.get("arguments", "")
+        )
     elif tool_name == "app_close":
         from actions import app_control as app_mod
 
         return await app_mod.app_close(tool_input["name"])
+
+    # Smart home / hardware bridge
+    elif tool_name == "smart_home_call":
+        from actions import smart_home as smarthome_mod
+
+        payload = {}
+        if tool_input.get("payload_json"):
+            try:
+                payload = json.loads(tool_input.get("payload_json", "{}"))
+                if not isinstance(payload, dict):
+                    payload = {}
+            except Exception:
+                payload = {}
+
+        return await smarthome_mod.ha_call(
+            service=tool_input["service"],
+            entity_id=tool_input.get("entity_id", ""),
+            payload=payload,
+        )
+
+    elif tool_name == "set_system_volume":
+        from actions import smart_home as smarthome_mod
+
+        return await smarthome_mod.set_volume(int(tool_input["percent"]))
 
     # Mouse control
     elif tool_name == "mouse_move":

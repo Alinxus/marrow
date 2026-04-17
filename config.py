@@ -166,6 +166,17 @@ HOTKEY_ENABLED = os.environ.get("HOTKEY_ENABLED", "1") == "1"
 WAKE_WORD_ENABLED = os.environ.get("WAKE_WORD_ENABLED", "1") == "1"
 WAKE_WORDS = ["marrow", "hey marrow"]
 
+# Conversational mode
+CONVERSATION_MODE_TIMEOUT_SECONDS = int(
+    os.environ.get("CONVERSATION_MODE_TIMEOUT_SECONDS", "30")
+)
+CONVERSATION_MAX_TURNS = int(os.environ.get("CONVERSATION_MAX_TURNS", "8"))
+CONVERSATION_MAX_TOKENS = int(os.environ.get("CONVERSATION_MAX_TOKENS", "260"))
+
+# Smart home (optional Home Assistant bridge)
+HOME_ASSISTANT_URL = os.environ.get("HOME_ASSISTANT_URL", "")
+HOME_ASSISTANT_TOKEN = os.environ.get("HOME_ASSISTANT_TOKEN", "")
+
 # Audio capture - set to false if no microphone
 AUDIO_ENABLED = os.environ.get("AUDIO_ENABLED", "1") == "1"
 

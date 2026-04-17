@@ -30,6 +30,7 @@ import config
 from storage import db
 from capture.screen import screen_capture_loop
 from capture.audio import AudioCaptureService, set_wake_word_callback
+from capture.audio import set_conversation_turn_callback
 from brain.reasoning import (
     reasoning_loop,
     _run_reasoning,
@@ -140,6 +141,7 @@ def _handle_slash_command(text: str) -> str | None:
             "- /models\n"
             "- /provider <auto|openai|anthropic|ollama|none>\n"
             "- /model <reasoning|scoring|vision> <model_name>\n"
+            "- /conversation <on|off|status>\n"
             "- /audio <on|off>\n"
             "- /hotkey <on|off>\n"
             "- /wakeword <on|off>"
@@ -210,6 +212,25 @@ def _handle_slash_command(text: str) -> str | None:
             "/wakeword": "WAKE_WORD_ENABLED",
         }[cmd]
         return _apply_settings_updates({key: val})
+
+    if cmd == "/conversation":
+        from brain import conversation
+
+        if not args:
+            return "Usage: /conversation <on|off|status>"
+        mode = args[0].lower()
+        if mode == "status":
+            active = conversation.is_active()
+            return f"Conversation mode: {'active' if active else 'inactive'}" + (
+                f" ({conversation.remaining_seconds()}s left)" if active else ""
+            )
+        if mode == "on":
+            conversation.activate_session()
+            return f"Conversation mode ON ({conversation.remaining_seconds()}s)."
+        if mode == "off":
+            conversation.end_session()
+            return "Conversation mode OFF."
+        return "Usage: /conversation <on|off|status>"
 
     return f"Unknown command: {cmd}. Try /help"
 
@@ -283,8 +304,47 @@ async def _main_async() -> None:
     set_confirm_callback(_approval_callback)
 
     # ── On-demand activation ──────────────────────────────────────────────
+    async def _handle_conversation_turn(user_text: str) -> None:
+        """Low-latency conversational turn handler (voice-first back-and-forth)."""
+        from brain import conversation
+        from voice.speak import speak
+
+        _emit("state_changed", "thinking")
+        try:
+            ctx = db.get_recent_context(30)
+            hint = _build_context_summary(ctx)
+            reply = await conversation.handle_turn(user_text, context_hint=hint)
+            if reply:
+                _emit("message_spoken", reply, 4)
+                await speak(reply)
+        except Exception as e:
+            log.error(f"Conversation turn error: {e}")
+            _emit("state_changed", "error")
+        finally:
+            _emit("state_changed", "idle")
+
     async def on_activation(reason: str) -> None:
         log.info(f"On-demand activation: {reason}")
+        from brain import conversation
+        from voice.speak import speak_filler
+
+        # Enter conversational mode on wake/hotkey activation.
+        conversation.activate_session()
+
+        # If wake phrase carried a query, answer via fast convo path.
+        query = conversation.extract_wake_query(str(reason or ""))
+        if query and len(query.strip()) > 1:
+            await _handle_conversation_turn(query)
+            return
+
+        # If no query, acknowledge quickly and wait for follow-up.
+        try:
+            await speak_filler()
+        except Exception:
+            pass
+        _emit("state_changed", "idle")
+        return
+
         _emit("state_changed", "thinking")
         try:
             context = db.get_recent_context(config.CONTEXT_WINDOW_SECONDS)
@@ -304,6 +364,7 @@ async def _main_async() -> None:
     od_set_loop(_asyncio_loop)
     set_activation_callback(on_activation)
     set_wake_word_callback(on_activation)
+    set_conversation_turn_callback(_handle_conversation_turn)
     audio_service.set_loop(_asyncio_loop)
     if _bridge:
         _bridge.set_loop(_asyncio_loop)
@@ -422,6 +483,7 @@ async def _main_async() -> None:
     async def _proactive_loop():
         try:
             from brain.proactive import proactive_loop
+
             await proactive_loop()
         except Exception as e:
             log.warning(f"Proactive loop unavailable: {e}")
