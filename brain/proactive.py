@@ -131,6 +131,7 @@ _state = {
     # Ambient delivery controls
     "last_spoken_ts": 0.0,
     "last_signal_by_key": {},  # key -> ts
+    "last_ambient_pulse_ts": 0.0,
 }
 
 # Thresholds
@@ -143,6 +144,7 @@ CALENDAR_ALERT_MIN = 12  # minutes before event to alert
 EOD_HOUR = 17  # 5 PM end-of-day nudge
 LOOP_INTERVAL = 60  # run checks every 60s
 DEFAULT_SIGNAL_DEDUP = 420  # suppress similar proactive signals for 7 minutes
+AMBIENT_PULSE_SECONDS = 180
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -262,7 +264,33 @@ def _should_emit_signal(kind: str, body: str, urgency: int) -> bool:
 
 def _in_meeting_now() -> bool:
     recent_apps = db.get_recent_apps(window_seconds=120)
-    return any(app in config.MEETING_APPS for app in recent_apps)
+    hard_meeting_apps = {"zoom", "teams", "meet", "webex", "whereby"}
+    if any(app in hard_meeting_apps for app in recent_apps):
+        return True
+
+    # Slack/Discord/etc should only count as meetings when call/huddle-like titles are present.
+    try:
+        ctx = db.get_recent_context(120)
+        titles = " ".join(
+            (s.get("window_title") or "").lower() for s in ctx.get("screenshots", [])
+        )
+        meeting_words = (
+            "meeting",
+            "huddle",
+            "call",
+            "joining",
+            "zoom",
+            "google meet",
+            "teams",
+        )
+        soft_apps = {"slack", "discord", "loom"}
+        if any(app in soft_apps for app in recent_apps) and any(
+            w in titles for w in meeting_words
+        ):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _in_flow_now() -> bool:
@@ -730,6 +758,50 @@ def get_proactive_context() -> str:
     return "=== PROACTIVE CONTEXT ===\n" + "\n".join(lines)
 
 
+async def _check_ambient_pulse() -> None:
+    """Periodic lightweight spoken check-in to avoid silent behavior."""
+    now = time.time()
+    if now - float(_state["last_ambient_pulse_ts"]) < AMBIENT_PULSE_SECONDS:
+        return
+
+    age = db.get_last_screenshot_age_seconds()
+    if age is None or age > 120:
+        await _surface_signal(
+            "I don't have fresh screen context right now. I may be less proactive until screen capture resumes.",
+            urgency=4,
+            kind="screen_stale",
+            speak_now=True,
+        )
+        _state["last_ambient_pulse_ts"] = now
+        return
+
+    ctx = db.get_recent_context(12 * 60)
+    shots = ctx.get("screenshots", [])
+    if not shots:
+        return
+
+    latest = shots[0]
+    app = (latest.get("app_name") or "your current app").strip()
+    title = (latest.get("window_title") or "").strip()
+
+    obs = db.get_observations(limit=10)
+    hint = ""
+    for row in obs:
+        t = (row.get("type") or "").lower()
+        if t in {"deadline", "calendar_alert", "task", "focus_debrief", "claim_fact"}:
+            hint = (row.get("content") or "").strip()[:110]
+            break
+
+    body = f"Quick check-in: you're in {app}"
+    if title:
+        body += f" on '{title[:52]}'"
+    if hint:
+        body += f". Noticed: {hint}"
+
+    await _surface_signal(body, urgency=2, kind="ambient_pulse")
+    _state["last_ambient_pulse_ts"] = now
+
+
 # ─── Main loop ────────────────────────────────────────────────────────────────
 
 
@@ -749,6 +821,7 @@ async def proactive_loop() -> None:
             await _check_distraction()
             await _check_calendar()
             await _check_end_of_day()
+            await _check_ambient_pulse()
         except Exception as e:
             log.debug(f"Proactive loop tick error: {e}")
 

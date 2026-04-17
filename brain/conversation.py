@@ -128,6 +128,30 @@ def _is_exit_utterance(text: str) -> bool:
     return any(p in low for p in _EXIT_PATTERNS)
 
 
+def _is_affirmative(text: str) -> bool:
+    low = (text or "").lower().strip()
+    return low in {
+        "yes",
+        "yep",
+        "yeah",
+        "sure",
+        "ok",
+        "okay",
+        "do it",
+        "go ahead",
+        "proceed",
+    }
+
+
+def _last_assistant_question() -> str:
+    for row in reversed(_history):
+        if row.get("role") == "assistant":
+            content = (row.get("content") or "").strip()
+            if "?" in content:
+                return content[:260]
+    return ""
+
+
 def _style_instruction() -> str:
     style = (
         getattr(config, "CONVERSATION_RESPONSE_STYLE", "balanced") or "balanced"
@@ -135,8 +159,8 @@ def _style_instruction() -> str:
     if style == "short":
         return "Keep every answer to one short sentence unless the user explicitly asks for detail."
     if style == "detailed":
-        return "Give concise but complete answers in 2-5 sentences with direct actionable details."
-    return "Prefer 1-2 short sentences unless user asks for detail."
+        return "Give complete but crisp answers in 2-4 sentences with concrete next steps when useful."
+    return "Keep it natural and concise, usually 1-3 sentences, with specifics over generic filler."
 
 
 async def handle_turn(user_text: str, context_hint: str = "") -> str:
@@ -155,12 +179,25 @@ async def handle_turn(user_text: str, context_hint: str = "") -> str:
     _refresh_references_from_context(context_hint)
     user_text = _resolve_followup_references(user_text)
 
+    if _is_affirmative(user_text):
+        last_q = _last_assistant_question()
+        if last_q:
+            user_text = (
+                "The user confirmed YES to your previous question. "
+                "Do not repeat the question. Proceed with the implied next step now. "
+                f"Previous question: {last_q}"
+            )
+
     system = " ".join(
         [
             "You are Marrow in live conversation mode.",
-            "Be brief, natural, and helpful.",
+            "Be natural, fast, and context-aware.",
             _style_instruction(),
-            "If an action is requested, say you'll do it and keep response concise.",
+            "Answer directly first, then ask at most one clarifying question only when blocked.",
+            "Do not repeat the user's question back to them.",
+            "Do not repeat your own previous question after the user says yes.",
+            "Use concrete details from current context and prior observed history when relevant.",
+            "Never claim you are not watching the screen unless the context explicitly says screen data is stale.",
             "No internal jargon.",
         ]
     )

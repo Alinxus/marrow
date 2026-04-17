@@ -547,19 +547,62 @@ async def _main_async() -> None:
     set_confirm_callback(_approval_callback)
 
     # ── On-demand activation ──────────────────────────────────────────────
+    def _looks_like_action_request(text: str) -> bool:
+        low = (text or "").strip().lower()
+        if not low:
+            return False
+        if low.startswith(("what", "why", "how", "when", "who", "where")):
+            return False
+        action_prefixes = (
+            "open ",
+            "close ",
+            "start ",
+            "stop ",
+            "run ",
+            "create ",
+            "write ",
+            "search ",
+            "find ",
+            "check ",
+            "send ",
+            "schedule ",
+            "remind ",
+            "call ",
+            "email ",
+            "message ",
+            "summarize ",
+        )
+        if low.startswith(action_prefixes):
+            return True
+        if low.startswith(("can you ", "could you ", "please ", "go ahead and ")):
+            return True
+        return False
+
     async def _handle_conversation_turn(user_text: str) -> None:
         """Low-latency conversational turn handler (voice-first back-and-forth)."""
         if not config.CONVERSATION_ENABLED:
             return
 
         from brain import conversation
+        from actions.executor import execute_action
         from voice.speak import speak
 
         _emit("state_changed", "thinking")
         try:
             ctx = db.get_recent_context(30)
             hint = _build_context_summary(ctx)
-            reply = await conversation.handle_turn(user_text, context_hint=hint)
+            if _looks_like_action_request(user_text):
+                action_result = await execute_action(user_text, context=hint)
+                action_text = (action_result or "").strip()
+                if action_text:
+                    reply = await conversation.handle_turn(
+                        f"I executed the user's request. Result: {action_text[:500]}",
+                        context_hint=hint,
+                    )
+                else:
+                    reply = "Done."
+            else:
+                reply = await conversation.handle_turn(user_text, context_hint=hint)
             if reply:
                 _emit("message_spoken", reply, 4)
                 await speak(reply)
@@ -669,8 +712,6 @@ async def _main_async() -> None:
 
         async def _patched_speak(text: str) -> None:
             _emit("state_changed", "speaking")
-            # Show toast (text fallback when voice is off or supplemental)
-            _emit("toast_requested", config.MARROW_NAME, text[:220], 4)
             await _orig_speak(text)
             _emit("state_changed", "idle")
 

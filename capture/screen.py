@@ -43,6 +43,7 @@ _last_title: str = ""
 _last_focused: str = ""
 _last_hash: str = ""
 _last_vision_ts: float = 0.0
+_last_persist_ts: float = 0.0
 _mac_screen_perm_warned: bool = False
 
 
@@ -325,6 +326,7 @@ async def screen_capture_loop() -> None:
         _last_focused, \
         _last_hash, \
         _last_vision_ts, \
+        _last_persist_ts, \
         _mac_screen_perm_warned
 
     log.info("Screen capture loop started")
@@ -348,7 +350,27 @@ async def screen_capture_loop() -> None:
                     and window_title == _last_title
                     and content_hash == _last_hash
                 ):
-                    log.debug("Screen unchanged — skipping")
+                    heartbeat_every = max(20, config.SCREENSHOT_INTERVAL * 6)
+                    if (ts - _last_persist_ts) >= heartbeat_every:
+                        keepalive_text = (
+                            _local_visual_summary(
+                                app_name, window_title, focused_context
+                            )
+                            + "\nScreen unchanged (keepalive capture)."
+                        )
+                        db.insert_screenshot(
+                            ts=ts,
+                            app_name=app_name,
+                            window_title=window_title,
+                            focused_context=focused_context,
+                            ocr_text=keepalive_text,
+                            image_path="",
+                            content_hash=content_hash,
+                        )
+                        _last_persist_ts = ts
+                        log.debug("Screen unchanged — keepalive persisted")
+                    else:
+                        log.debug("Screen unchanged — skipping")
                     await asyncio.sleep(config.SCREENSHOT_INTERVAL)
                     continue
 
@@ -398,6 +420,7 @@ async def screen_capture_loop() -> None:
                     image_path=image_path,
                     content_hash=content_hash,
                 )
+                _last_persist_ts = ts
 
                 # High-signal context extraction (contact pressure + claim events)
                 try:

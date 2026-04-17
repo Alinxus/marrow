@@ -40,9 +40,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_STAMP_FILE      = Path.home() / ".marrow" / "last_welcome"
-_TASKS_FILE      = Path.home() / ".marrow" / "startup_tasks.json"
-_EXAMPLE_TASKS   = Path.home() / ".marrow" / "startup_tasks.example.json"
+_STAMP_FILE = Path.home() / ".marrow" / "last_welcome"
+_TASKS_FILE = Path.home() / ".marrow" / "startup_tasks.json"
+_EXAMPLE_TASKS = Path.home() / ".marrow" / "startup_tasks.example.json"
 
 # Default example tasks written on first run so users know the format
 _EXAMPLE_CONTENT = [
@@ -50,31 +50,31 @@ _EXAMPLE_CONTENT = [
         "task": "Check my emails from the last 24 hours and summarize important ones as a toast notification",
         "delay_seconds": 0,
         "enabled": True,
-        "description": "Email briefing — summarizes unread emails"
+        "description": "Email briefing — summarizes unread emails",
     },
     {
         "task": "Get today's calendar events and show them in a toast notification",
         "delay_seconds": 2,
         "enabled": True,
-        "description": "Calendar briefing — shows today's meetings"
+        "description": "Calendar briefing — shows today's meetings",
     },
     {
         "task": "Check GitHub notifications for PRs or issues that need my attention and notify me",
         "delay_seconds": 5,
         "enabled": False,
-        "description": "GitHub PR review checker (requires gh CLI)"
+        "description": "GitHub PR review checker (requires gh CLI)",
     },
     {
         "task": "Search the web for today's top tech news and give me a 2-sentence summary",
         "delay_seconds": 8,
         "enabled": False,
-        "description": "Morning tech news briefing"
+        "description": "Morning tech news briefing",
     },
     {
         "task": "Open Spotify and start playing my liked songs",
         "delay_seconds": 0,
         "enabled": False,
-        "description": "Start focus music on startup"
+        "description": "Start focus music on startup",
     },
 ]
 
@@ -122,7 +122,9 @@ def _load_startup_tasks() -> list[dict]:
         if _TASKS_FILE.exists():
             raw = json.loads(_TASKS_FILE.read_text(encoding="utf-8"))
             if isinstance(raw, list):
-                return [t for t in raw if isinstance(t, dict) and t.get("enabled", True)]
+                return [
+                    t for t in raw if isinstance(t, dict) and t.get("enabled", True)
+                ]
     except Exception as e:
         log.warning(f"Could not load startup_tasks.json: {e}")
     return []
@@ -181,14 +183,14 @@ async def _run_welcome() -> None:
     from voice.speak import speak
     import config
 
-    user_name   = _get_user_name()
+    user_name = _get_user_name()
     time_of_day = _time_of_day()
-    name_part   = f" {user_name}" if user_name else ""
+    name_part = f" {user_name}" if user_name else ""
 
     task = f"""
 Greet the user as they start their {time_of_day}.
 
-Their name is: {user_name or 'unknown (just say hey)'}
+Their name is: {user_name or "unknown (just say hey)"}
 
 Steps:
 1. Use memory_search("user preferences schedule priorities") to recall what you know about them.
@@ -196,11 +198,12 @@ Steps:
    - Say "Good {time_of_day}{name_part}."
    - Mention one relevant thing from memory if you have it (a project they were working on, a meeting pattern, etc.)
    - Keep it personal and direct, not generic.
+   - End with a concrete offer to help, not a repeated yes/no question.
 3. Use notify_user with title="{config.MARROW_NAME}" and urgency=4 to show the greeting as a toast.
 4. Return the greeting text.
 
 Style: like Jarvis greeting Tony. Warm, competent, specific. Never robotic.
-Example: "Good morning. You were in the middle of the auth module yesterday — picking up where you left off?"
+Example: "Good morning. You were in the middle of the auth module yesterday. I can reopen it and continue from the next step."
 """.strip()
 
     try:
@@ -216,6 +219,7 @@ Example: "Good morning. You were in the middle of the auth module yesterday — 
         try:
             from ui.bridge import get_bridge
             import config
+
             get_bridge().toast_requested.emit(
                 config.MARROW_NAME,
                 f"Good {time_of_day}{name_part}. Ready when you are.",
@@ -228,6 +232,7 @@ Example: "Good morning. You were in the middle of the auth module yesterday — 
 async def _run_task(task: str) -> None:
     """Run a single startup task via the executor."""
     from actions.executor import execute_action
+
     try:
         result = await execute_action(task, context="Startup task")
         log.info(f"Startup task done: {result[:80] if result else 'no output'}")
@@ -242,17 +247,22 @@ def _get_user_name() -> str:
     """Get user's name from memory observations or OS."""
     try:
         from storage import db
+
         for obs in db.get_observations_by_type("identity", limit=10):
             content = obs.get("content", "")
             if "name" in content.lower():
                 for w in content.split():
-                    if (w[0].isupper() and len(w) > 2
-                            and w.lower() not in ("name", "the", "user", "my", "his", "her")):
+                    if (
+                        w[0].isupper()
+                        and len(w) > 2
+                        and w.lower() not in ("name", "the", "user", "my", "his", "her")
+                    ):
                         return w
     except Exception:
         pass
     try:
         import os
+
         return (os.environ.get("USERNAME") or os.environ.get("USER") or "").capitalize()
     except Exception:
         return ""

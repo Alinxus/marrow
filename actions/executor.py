@@ -1577,7 +1577,9 @@ def _resolve_followup_task(task: str) -> str:
         if last_question:
             return (
                 "User confirmed YES to your previous question. "
-                f"Proceed now with: {last_question}"
+                "Do not ask the same question again. "
+                "Infer the intended next action and execute it now. "
+                f"Previous question: {last_question}"
             )
         if last_user_request:
             return (

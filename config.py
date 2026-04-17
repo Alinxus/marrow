@@ -168,12 +168,12 @@ WAKE_WORDS = ["marrow", "hey marrow"]
 # Conversational mode
 CONVERSATION_ENABLED = os.environ.get("CONVERSATION_ENABLED", "1") == "1"
 CONVERSATION_MODE_TIMEOUT_SECONDS = int(
-    os.environ.get("CONVERSATION_MODE_TIMEOUT_SECONDS", "30")
+    os.environ.get("CONVERSATION_MODE_TIMEOUT_SECONDS", "120")
 )
-CONVERSATION_MAX_TURNS = int(os.environ.get("CONVERSATION_MAX_TURNS", "8"))
-CONVERSATION_MAX_TOKENS = int(os.environ.get("CONVERSATION_MAX_TOKENS", "260"))
+CONVERSATION_MAX_TURNS = int(os.environ.get("CONVERSATION_MAX_TURNS", "20"))
+CONVERSATION_MAX_TOKENS = int(os.environ.get("CONVERSATION_MAX_TOKENS", "420"))
 CONVERSATION_RESPONSE_STYLE = os.environ.get(
-    "CONVERSATION_RESPONSE_STYLE", "balanced"
+    "CONVERSATION_RESPONSE_STYLE", "detailed"
 ).lower()
 
 # Smart home (optional Home Assistant bridge)

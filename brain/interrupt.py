@@ -126,7 +126,32 @@ class InterruptDecisionEngine:
 def _in_meeting() -> bool:
     """Check if a meeting app has been active recently."""
     recent_apps = db.get_recent_apps(window_seconds=120)
-    return any(app in config.MEETING_APPS for app in recent_apps)
+    hard_meeting_apps = {"zoom", "teams", "meet", "webex", "whereby"}
+    if any(app in hard_meeting_apps for app in recent_apps):
+        return True
+
+    try:
+        ctx = db.get_recent_context(120)
+        titles = " ".join(
+            (s.get("window_title") or "").lower() for s in ctx.get("screenshots", [])
+        )
+        meeting_words = (
+            "meeting",
+            "huddle",
+            "call",
+            "joining",
+            "zoom",
+            "google meet",
+            "teams",
+        )
+        soft_apps = {"slack", "discord", "loom"}
+        if any(app in soft_apps for app in recent_apps) and any(
+            w in titles for w in meeting_words
+        ):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _in_flow_state() -> bool:

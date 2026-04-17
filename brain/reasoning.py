@@ -785,6 +785,17 @@ async def _handle_result(
         else:
             log.debug(f"Candidate suppressed: {message[:60]}")
 
+    elif message and urgency >= int(
+        getattr(config, "PROACTIVE_AUTO_SPEAK_MIN_URGENCY", 2)
+    ):
+        # Talkative mode: if model produced a concrete message but didn't mark speak,
+        # still surface it when interruption policy allows.
+        if interrupt_engine.should_speak(candidate):
+            interrupt_engine.record_spoken(candidate)
+            await speak(message)
+        else:
+            log.debug(f"Auto-speak suppressed: {message[:60]}")
+
     elif act and not should_speak:
         # Silent action — do the work without speaking
         # Only run if urgency is high enough to act without prompting

@@ -350,4 +350,6 @@ async def _speak_system(text: str) -> None:
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
-    await proc.wait()
+    rc = await proc.wait()
+    if rc != 0:
+        log.warning(f"System TTS process exited with code {rc}")

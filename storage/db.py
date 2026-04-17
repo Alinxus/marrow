@@ -19,6 +19,7 @@ Design decisions:
 import hashlib
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -302,6 +303,18 @@ def get_last_screenshot() -> Optional[dict]:
         "SELECT app_name, window_title, content_hash FROM screenshots ORDER BY ts DESC LIMIT 1"
     ).fetchone()
     return dict(row) if row else None
+
+
+def get_last_screenshot_age_seconds() -> float | None:
+    """Seconds since latest screenshot row, or None if no rows exist."""
+    conn = _connect()
+    row = conn.execute("SELECT MAX(ts) AS max_ts FROM screenshots").fetchone()
+    if not row:
+        return None
+    max_ts = row["max_ts"]
+    if max_ts is None:
+        return None
+    return max(0.0, time.time() - float(max_ts))
 
 
 def get_recent_interruptions(window_seconds: int) -> list:
