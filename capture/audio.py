@@ -17,12 +17,19 @@ Design notes from Omi:
 
 import asyncio
 import logging
+import os
 import platform
 import queue
 import re
 import time
 import threading
 from collections import deque
+
+# Reduce OpenBLAS/OMP memory usage before NumPy import.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import numpy as np
 import sounddevice as sd

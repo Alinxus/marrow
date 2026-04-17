@@ -26,6 +26,13 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+# Keep BLAS/OpenMP footprint tiny on constrained Windows machines.
+# Must be set before importing modules that may load NumPy/OpenBLAS.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import config
 from storage import db, state_store
 from capture.screen import screen_capture_loop
