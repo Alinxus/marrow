@@ -157,10 +157,37 @@ def _style_instruction() -> str:
         getattr(config, "CONVERSATION_RESPONSE_STYLE", "balanced") or "balanced"
     ).lower()
     if style == "short":
-        return "Keep every answer to one short sentence unless the user explicitly asks for detail."
+        return (
+            "Keep answers to one clear sentence unless detail is explicitly requested."
+        )
     if style == "detailed":
         return "Give complete but crisp answers in 2-4 sentences with concrete next steps when useful."
     return "Keep it natural and concise, usually 1-3 sentences, with specifics over generic filler."
+
+
+def _detemplatize_reply(text: str) -> str:
+    out = (text or "").strip()
+    if not out:
+        return out
+
+    # Strip robotic lead-ins.
+    lead_patterns = [
+        r"^(great question[\.!]?\s*)",
+        r"^(certainly[\.!]?\s*)",
+        r"^(of course[\.!]?\s*)",
+        r"^(absolutely[\.!]?\s*)",
+        r"^(i(?:'d| would) be happy to[\.!]?\s*)",
+    ]
+    for pat in lead_patterns:
+        out = re.sub(pat, "", out, flags=re.IGNORECASE)
+
+    # Avoid accidental duplicated first sentence.
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", out) if s.strip()]
+    if len(sentences) >= 2 and sentences[0].lower() == sentences[1].lower():
+        sentences.pop(1)
+    out = " ".join(sentences).strip()
+
+    return out or text
 
 
 async def handle_turn(user_text: str, context_hint: str = "") -> str:
@@ -198,6 +225,8 @@ async def handle_turn(user_text: str, context_hint: str = "") -> str:
             "Do not repeat your own previous question after the user says yes.",
             "Use concrete details from current context and prior observed history when relevant.",
             "Never claim you are not watching the screen unless the context explicitly says screen data is stale.",
+            "Sound like a sharp human operator: contractions are fine, avoid corporate phrasing.",
+            "Avoid repetitive sentence starters; vary cadence naturally.",
             "No internal jargon.",
         ]
     )
@@ -219,9 +248,14 @@ async def handle_turn(user_text: str, context_hint: str = "") -> str:
             messages=msgs,
             system=system,
             max_tokens=config.CONVERSATION_MAX_TOKENS,
-            model_type="scoring",
+            model_type=(
+                config.CONVERSATION_MODEL_TYPE
+                if config.CONVERSATION_MODEL_TYPE in ("reasoning", "scoring")
+                else "reasoning"
+            ),
         )
         text = (response.text or "").strip()
+        text = _detemplatize_reply(text)
 
         if not text:
             text = "I'm here. What do you want me to do?"

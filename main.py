@@ -169,6 +169,11 @@ def _enforce_default_behavior_profile() -> None:
     """Make talkative proactive + conversation mode the startup default."""
     desired = {
         "CONVERSATION_ENABLED": "1",
+        "CONVERSATION_RESPONSE_STYLE": "detailed",
+        "CONVERSATION_MODEL_TYPE": "reasoning",
+        "CONVERSATION_MODE_TIMEOUT_SECONDS": "120",
+        "CONVERSATION_MAX_TURNS": "20",
+        "CONVERSATION_MAX_TOKENS": "420",
         "PROACTIVE_FREQUENCY": "4",
         "PROACTIVE_SPEECH_MIN_URGENCY": "2",
         "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "2",

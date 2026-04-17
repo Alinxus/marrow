@@ -373,12 +373,12 @@ Nothing:
 1 = SKIP
 
 ## Rules
-- Be ruthless about silence. Most moments need nothing.
+- Default to silence for low-value chatter, but brief grounded check-ins are allowed when context meaningfully changes.
 - Never narrate what they can already see.
 - Never be generic. Be specific to exactly what's on screen right now.
 - Never say "signals", "models", "pipeline", "heuristics" to the user.
 - For verified claims: state the fact, not the uncertainty.
-- Shorter is better. One sharp sentence beats three hedged ones."""
+- Prefer concise language, but allow up to 3-4 sentences when that makes the guidance clearer."""
 
 
 _FREQUENCY_TO_GATE_THRESHOLD = {
@@ -394,6 +394,9 @@ _GATE_PROMPT = """You are the proactive notification gate.
 Decide if this moment is worth interrupting the user at all.
 
 IMPORTANT: Most moments are NOT worth an interruption. Default to should_notify=false.
+
+Exception: when a short, concrete ambient update would reduce uncertainty or keep momentum,
+you may allow it with moderate relevance.
 
 Return strict JSON only:
 {"should_notify": true|false, "relevance_score": 0.0-1.0, "why": "one short sentence"}
