@@ -176,6 +176,18 @@ def init_db() -> None:
             detail    TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS proactive_decisions (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts       REAL NOT NULL,
+            lane     TEXT NOT NULL,
+            stage    TEXT NOT NULL,
+            status   TEXT NOT NULL,
+            score    REAL,
+            latency_ms REAL,
+            reason   TEXT,
+            payload  TEXT
+        );
+
         -- FTS5 trigram indexes for fast search
         CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(
             content, type, source,
@@ -212,7 +224,19 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_missions_status   ON missions(status);
         CREATE INDEX IF NOT EXISTS idx_mission_steps_mid ON mission_steps(mission_id, step_index);
         CREATE INDEX IF NOT EXISTS idx_runtime_ts        ON runtime_components(ts);
+        CREATE INDEX IF NOT EXISTS idx_proactive_ts      ON proactive_decisions(ts);
+        CREATE INDEX IF NOT EXISTS idx_proactive_lane    ON proactive_decisions(lane, stage, ts);
     """)
+
+    # Backward-compatible column add for existing DBs.
+    try:
+        cols = conn.execute("PRAGMA table_info(proactive_decisions)").fetchall()
+        col_names = {c[1] for c in cols}
+        if "latency_ms" not in col_names:
+            conn.execute("ALTER TABLE proactive_decisions ADD COLUMN latency_ms REAL")
+            conn.commit()
+    except Exception:
+        pass
     conn.commit()
 
 
@@ -279,6 +303,33 @@ def insert_observation(type_: str, content: str, source: str = "screen") -> bool
         return False
 
 
+def insert_proactive_decision(
+    lane: str,
+    stage: str,
+    status: str,
+    reason: str = "",
+    payload: str = "",
+    score: float | None = None,
+    latency_ms: float | None = None,
+) -> None:
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO proactive_decisions (ts, lane, stage, status, score, latency_ms, reason, payload)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            time.time(),
+            lane[:40],
+            stage[:40],
+            status[:30],
+            score,
+            latency_ms,
+            (reason or "")[:320],
+            (payload or "")[:520],
+        ),
+    )
+    conn.commit()
+
+
 # ─── Reads ─────────────────────────────────────────────────────────────────────
 
 
@@ -302,6 +353,21 @@ def get_recent_context(window_seconds: int) -> dict:
         "screenshots": [dict(r) for r in screenshots],
         "transcripts": [dict(r) for r in transcripts],
     }
+
+
+def get_recent_screenshots(window_seconds: int, limit: int = 1200) -> list:
+    """Get recent screenshots only (larger window/limit than get_recent_context)."""
+    conn = _connect()
+    cutoff = (datetime.utcnow() - timedelta(seconds=window_seconds)).timestamp()
+    rows = conn.execute(
+        """SELECT ts, app_name, window_title, focused_context, ocr_text, content_hash
+           FROM screenshots
+           WHERE ts > ?
+           ORDER BY ts DESC
+           LIMIT ?""",
+        (cutoff, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_last_screenshot() -> Optional[dict]:
@@ -386,6 +452,32 @@ def count_interruptions_since(ts_cutoff: float) -> int:
         (ts_cutoff,),
     ).fetchone()
     return int(row["n"] if row else 0)
+
+
+def get_proactive_decision_counts(window_seconds: int = 3600) -> list:
+    conn = _connect()
+    cutoff = time.time() - max(1, int(window_seconds))
+    rows = conn.execute(
+        """SELECT lane, stage, status, COUNT(*) AS n
+           FROM proactive_decisions
+           WHERE ts > ?
+           GROUP BY lane, stage, status
+           ORDER BY lane, stage, status""",
+        (cutoff,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_recent_proactive_decisions(limit: int = 50) -> list:
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT ts, lane, stage, status, score, reason, payload
+           FROM proactive_decisions
+           ORDER BY ts DESC
+           LIMIT ?""",
+        (max(1, min(500, int(limit))),),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_observations(limit: int = 50) -> list:

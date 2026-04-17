@@ -108,6 +108,7 @@ async def _build_semantic_memory_context(current_context: str) -> str:
     """
     from brain.wiki import wiki_context
     from brain.agi import get_agi
+    from actions.memory import get_memory_client
 
     parts = []
     agi = get_agi()
@@ -122,6 +123,53 @@ async def _build_semantic_memory_context(current_context: str) -> str:
         oracle_ctx = await agi.get_oracle_context(current_context[:600], limit=8)
         if oracle_ctx:
             parts.append(oracle_ctx)
+
+    # 2.5 RetainDB context/profile (throttled + cached, stronger awareness)
+    global _last_retaindb_ctx_fetch, _last_retaindb_ctx_key, _last_retaindb_ctx_value
+    global _last_retaindb_profile_fetch, _last_retaindb_profile_value
+    client = get_memory_client()
+    now = time.time()
+    if client and current_context:
+        query_key = hashlib.md5(current_context[:900].encode("utf-8")).hexdigest()
+        need_ctx_fetch = query_key != _last_retaindb_ctx_key or (
+            now - _last_retaindb_ctx_fetch
+        ) >= max(20, int(getattr(config, "RETAINDB_CONTEXT_REFRESH_SECONDS", 75)))
+        if need_ctx_fetch:
+            try:
+                remote_ctx = await client.query_context(
+                    current_context[:900], include_profile=True
+                )
+                assembled = (
+                    remote_ctx.get("context") or remote_ctx.get("content") or ""
+                ).strip()
+                if assembled:
+                    _last_retaindb_ctx_value = assembled[:2200]
+                    _last_retaindb_ctx_key = query_key
+                    _last_retaindb_ctx_fetch = now
+            except Exception as e:
+                log.debug(f"RetainDB context query failed: {e}")
+        if _last_retaindb_ctx_value:
+            parts.append(f"=== RETAINDB CONTEXT ===\n{_last_retaindb_ctx_value}")
+
+        need_profile_fetch = (now - _last_retaindb_profile_fetch) >= max(
+            60, int(getattr(config, "RETAINDB_PROFILE_REFRESH_SECONDS", 300))
+        )
+        if need_profile_fetch:
+            try:
+                profile = await client.get_profile_model()
+                if profile and not profile.get("error"):
+                    compact = {
+                        "preferences": profile.get("preferences", {}),
+                        "goals": profile.get("goals", []),
+                        "working_style": profile.get("working_style", ""),
+                        "frequent_entities": profile.get("frequent_entities", [])[:10],
+                    }
+                    _last_retaindb_profile_value = json.dumps(compact)[:1400]
+                    _last_retaindb_profile_fetch = now
+            except Exception as e:
+                log.debug(f"RetainDB profile fetch failed: {e}")
+        if _last_retaindb_profile_value:
+            parts.append(f"=== RETAINDB PROFILE ===\n{_last_retaindb_profile_value}")
 
     # 3. Memory graph connections
     graph_ctx = agi.get_graph_context()
@@ -204,6 +252,7 @@ async def _run_reasoning(full_context: str) -> Optional[dict]:
     user_content = full_context[: config.REASONING_CONTEXT_CHAR_LIMIT]
 
     try:
+        t0 = time.time()
         response = await llm.create(
             messages=[{"role": "user", "content": user_content}],
             system=DEEP_REASONING_PROMPT,
@@ -231,6 +280,13 @@ async def _run_reasoning(full_context: str) -> Optional[dict]:
 
 # Cache: skip world model LLM extraction when context hasn't changed
 _last_world_extract_hash: str = ""
+
+# RetainDB context/profile caches
+_last_retaindb_ctx_fetch: float = 0.0
+_last_retaindb_ctx_key: str = ""
+_last_retaindb_ctx_value: str = ""
+_last_retaindb_profile_fetch: float = 0.0
+_last_retaindb_profile_value: str = ""
 
 
 async def _extract_world_model(
@@ -468,6 +524,9 @@ async def _gate_context(full_context: str) -> bool:
 
     llm = get_client()
     if llm.provider == "none":
+        db.insert_proactive_decision(
+            lane="reasoning", stage="gate", status="skip", reason="no_llm"
+        )
         return False
 
     try:
@@ -486,6 +545,9 @@ async def _gate_context(full_context: str) -> bool:
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start == -1 or end == 0:
+            db.insert_proactive_decision(
+                lane="reasoning", stage="gate", status="pass", reason="non_json"
+            )
             return True
 
         gate = json.loads(raw[start:end])
@@ -493,10 +555,25 @@ async def _gate_context(full_context: str) -> bool:
         should_notify = bool(gate.get("should_notify", False))
         threshold = _gate_threshold()
         passed = should_notify and score >= threshold
+        gate_ms = (time.time() - t0) * 1000.0
         log.debug(f"Gate: score={score:.2f} threshold={threshold:.2f} pass={passed}")
+        db.insert_proactive_decision(
+            lane="reasoning",
+            stage="gate",
+            status="pass" if passed else "reject",
+            score=score,
+            latency_ms=gate_ms,
+            reason=(gate.get("reasoning") or "")[:180],
+        )
         return passed
     except Exception as e:
         log.debug(f"Gate fallback (error): {e}")
+        db.insert_proactive_decision(
+            lane="reasoning",
+            stage="gate",
+            status="pass",
+            reason=f"error_fallback:{e}"[:180],
+        )
         return True
 
 
@@ -506,6 +583,9 @@ async def _critic_approve(message: str, reasoning: str, context: str) -> bool:
 
     llm = get_client()
     if llm.provider == "none":
+        db.insert_proactive_decision(
+            lane="reasoning", stage="critic", status="skip", reason="no_llm"
+        )
         return False
 
     prompt = _CRITIC_PROMPT.format(
@@ -514,6 +594,7 @@ async def _critic_approve(message: str, reasoning: str, context: str) -> bool:
         context=context[:700],
     )
     try:
+        t0 = time.time()
         response = await llm.create(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=config.CRITIC_MAX_TOKENS,
@@ -523,16 +604,35 @@ async def _critic_approve(message: str, reasoning: str, context: str) -> bool:
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start == -1 or end == 0:
+            db.insert_proactive_decision(
+                lane="reasoning", stage="critic", status="pass", reason="non_json"
+            )
             return True
 
         critic = json.loads(raw[start:end])
         approved = bool(critic.get("approved", False))
         confidence = float(critic.get("confidence", 0.5))
         ok = approved and confidence >= 0.55
+        critic_ms = (time.time() - t0) * 1000.0
         log.debug(f"Critic: approved={approved} confidence={confidence:.2f} pass={ok}")
+        db.insert_proactive_decision(
+            lane="reasoning",
+            stage="critic",
+            status="pass" if ok else "reject",
+            score=confidence,
+            latency_ms=critic_ms,
+            reason=(critic.get("reasoning") or "")[:180],
+            payload=message[:200],
+        )
         return ok
     except Exception as e:
         log.debug(f"Critic fallback (error): {e}")
+        db.insert_proactive_decision(
+            lane="reasoning",
+            stage="critic",
+            status="pass",
+            reason=f"error_fallback:{e}"[:180],
+        )
         return True
 
 
@@ -623,6 +723,17 @@ async def reasoning_loop(
         elapsed = time.time() - cycle_start
         sleep_for = max(0.0, config.REASONING_INTERVAL - elapsed)
         await asyncio.sleep(sleep_for)
+
+
+def get_retaindb_context_stats() -> dict:
+    return {
+        "last_ctx_fetch": float(_last_retaindb_ctx_fetch),
+        "ctx_cached": bool(_last_retaindb_ctx_value),
+        "ctx_chars": len(_last_retaindb_ctx_value or ""),
+        "last_profile_fetch": float(_last_retaindb_profile_fetch),
+        "profile_cached": bool(_last_retaindb_profile_value),
+        "profile_chars": len(_last_retaindb_profile_value or ""),
+    }
 
 
 _FOUR_AXIS_PROMPT = """\
@@ -765,16 +876,46 @@ async def _handle_result(
 
     if should_speak and message:
         if not _daily_limit_ok():
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="interrupt",
+                status="skip",
+                reason="daily_safety_brake",
+                payload=message[:200],
+            )
             return
 
         # 4-axis confidence filter before even hitting the interrupt engine
         score = await _four_axis_score(message, reasoning, context_str[:400])
         if score < 0:
             log.debug(f"4-axis veto: {message[:60]}")
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="four_axis",
+                status="reject",
+                score=score,
+                reason="veto",
+                payload=message[:200],
+            )
             return
         if score < 0.45:
             log.debug(f"4-axis rejected (score={score:.2f}): {message[:60]}")
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="four_axis",
+                status="reject",
+                score=score,
+                reason="below_threshold",
+                payload=message[:200],
+            )
             return
+        db.insert_proactive_decision(
+            lane="reasoning",
+            stage="four_axis",
+            status="pass",
+            score=score,
+            payload=message[:200],
+        )
 
         # Final critic pass (Omi-style generate -> critic)
         if not await _critic_approve(message, reasoning, context_str):
@@ -783,6 +924,13 @@ async def _handle_result(
 
         if interrupt_engine.should_speak(candidate):
             interrupt_engine.record_spoken(candidate)
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="interrupt",
+                status="sent",
+                score=float(urgency),
+                payload=message[:220],
+            )
 
             if act:
                 await speak(message)
@@ -791,6 +939,14 @@ async def _handle_result(
                 await speak(message)
         else:
             log.debug(f"Candidate suppressed: {message[:60]}")
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="interrupt",
+                status="suppress",
+                score=float(urgency),
+                reason="interrupt_engine",
+                payload=message[:220],
+            )
 
     elif message and urgency >= int(
         getattr(config, "PROACTIVE_AUTO_SPEAK_MIN_URGENCY", 2)
@@ -799,19 +955,49 @@ async def _handle_result(
         # still surface it when interruption policy allows.
         if interrupt_engine.should_speak(candidate):
             interrupt_engine.record_spoken(candidate)
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="interrupt_auto",
+                status="sent",
+                score=float(urgency),
+                payload=message[:220],
+            )
             await speak(message)
         else:
             log.debug(f"Auto-speak suppressed: {message[:60]}")
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="interrupt_auto",
+                status="suppress",
+                score=float(urgency),
+                reason="interrupt_engine",
+                payload=message[:220],
+            )
 
     elif act and not should_speak:
         # Silent action — do the work without speaking
         # Only run if urgency is high enough to act without prompting
         if urgency >= 3:
             log.info(f"Silent action (urgency {urgency}): {act.get('task', '')[:60]}")
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="action",
+                status="run",
+                score=float(urgency),
+                payload=(act.get("task", "") or "")[:220],
+            )
             await speak_filler()  # brief acknowledgment
             await _run_action(act, context_str)
         else:
             log.debug(f"Silent action suppressed: urgency too low ({urgency})")
+            db.insert_proactive_decision(
+                lane="reasoning",
+                stage="action",
+                status="suppress",
+                score=float(urgency),
+                reason="low_urgency",
+                payload=(act.get("task", "") or "")[:220],
+            )
 
     else:
         log.debug("Reasoning: nothing to surface")

@@ -133,6 +133,9 @@ _state = {
     "last_signal_by_key": {},  # key -> ts
     "last_ambient_pulse_ts": 0.0,
     "last_presence_ping_ts": 0.0,
+    "last_kind_emit_ts": {},  # kind -> ts
+    "health_state": "active",  # active|degraded|recovering
+    "consecutive_errors": 0,
 }
 
 # Thresholds
@@ -147,6 +150,16 @@ LOOP_INTERVAL = 60  # run checks every 60s
 DEFAULT_SIGNAL_DEDUP = 420  # suppress similar proactive signals for 7 minutes
 AMBIENT_PULSE_SECONDS = 180
 PRESENCE_PING_SECONDS = 240
+
+_KIND_COOLDOWNS = {
+    "mentor_proactive": 120,
+    "presence_ping": 240,
+    "ambient_pulse": 180,
+    "calendar": 180,
+    "focus_debrief": 60,
+    "distraction": 900,
+    "screen_stale": 180,
+}
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -172,8 +185,7 @@ def _get_current_app_run() -> tuple[str, int]:
     Scans recent screenshots newest-first until app changes.
     """
     try:
-        ctx = db.get_recent_context(3600)  # last hour
-        shots = ctx.get("screenshots", [])
+        shots = db.get_recent_screenshots(3600, limit=1200)  # last hour
         if not shots:
             return "", 0
 
@@ -245,8 +257,16 @@ def _signal_key(kind: str, body: str) -> str:
 
 
 def _should_emit_signal(kind: str, body: str, urgency: int) -> bool:
-    key = _signal_key(kind, body)
     now = time.time()
+
+    # Per-lane cooldowns (Omi-style practical anti-spam by category)
+    lane_cd = int(_KIND_COOLDOWNS.get(kind, 0))
+    if lane_cd > 0:
+        last_kind = float(_state["last_kind_emit_ts"].get(kind, 0.0))
+        if last_kind and now - last_kind < lane_cd:
+            return False
+
+    key = _signal_key(kind, body)
     dedup_seconds = int(
         getattr(config, "PROACTIVE_SIGNAL_DEDUP_SECONDS", DEFAULT_SIGNAL_DEDUP)
     )
@@ -261,6 +281,13 @@ def _should_emit_signal(kind: str, body: str, urgency: int) -> bool:
             _state["last_signal_by_key"].items(), key=lambda kv: kv[1], reverse=True
         )
         _state["last_signal_by_key"] = dict(items[:180])
+
+    _state["last_kind_emit_ts"][kind] = now
+    if len(_state["last_kind_emit_ts"]) > 100:
+        pairs = sorted(
+            _state["last_kind_emit_ts"].items(), key=lambda kv: kv[1], reverse=True
+        )
+        _state["last_kind_emit_ts"] = dict(pairs[:60])
     return True
 
 
@@ -315,6 +342,8 @@ def _user_actively_speaking() -> bool:
 def _can_speak_now(urgency: int) -> bool:
     if not config.PROACTIVE_SPEECH_ENABLED:
         return False
+    if not getattr(config, "VOICE_ENABLED", True):
+        return False
     if urgency < int(getattr(config, "PROACTIVE_SPEECH_MIN_URGENCY", 4)):
         return False
     if _user_actively_speaking() and urgency < 5:
@@ -347,7 +376,14 @@ async def _surface_signal(
 
     # Omi-like ambient ladder: overlay pulse -> toast -> speech
     _emit_overlay(kind, title, body, confidence=0.78)
-    if urgency >= 3:
+    audio_unavailable = (not getattr(config, "VOICE_ENABLED", True)) or (
+        not getattr(config, "PROACTIVE_SPEECH_ENABLED", True)
+    )
+    toast_threshold = max(1, int(getattr(config, "PROACTIVE_TOAST_MIN_URGENCY", 1)))
+    force_toast = bool(
+        getattr(config, "PROACTIVE_FORCE_TOAST_WHEN_AUDIO_UNAVAILABLE", True)
+    )
+    if urgency >= toast_threshold or (audio_unavailable and force_toast):
         _emit_toast(title, body, urgency)
 
     auto_min = int(getattr(config, "PROACTIVE_AUTO_SPEAK_MIN_URGENCY", 2))
@@ -926,6 +962,38 @@ async def _check_presence_ping() -> None:
     _state["last_presence_ping_ts"] = now
 
 
+async def _check_mentor_proactive() -> None:
+    """Buffered mentor-style proactive lane (gate -> generate -> critic)."""
+    if not getattr(config, "MENTOR_PROACTIVE_ENABLED", True):
+        return
+    try:
+        from brain.mentor_proactive import maybe_generate_mentor_signal_for_session
+
+        session_id = "default"
+        try:
+            ctx = db.get_recent_context(120)
+            shots = ctx.get("screenshots", [])
+            if shots:
+                app = (shots[0].get("app_name") or "unknown").lower().strip()
+                title = (shots[0].get("window_title") or "").lower().strip()
+                session_id = f"{app}|{title[:80]}"
+        except Exception:
+            pass
+
+        signal = await maybe_generate_mentor_signal_for_session(session_id)
+        if not signal:
+            return
+        message, urgency = signal
+        await _surface_signal(
+            message,
+            urgency=max(2, min(5, int(urgency))),
+            speak_now=True,
+            kind="mentor_proactive",
+        )
+    except Exception as e:
+        log.debug(f"Mentor proactive check failed: {e}")
+
+
 # ─── Main loop ────────────────────────────────────────────────────────────────
 
 
@@ -937,7 +1005,11 @@ async def proactive_loop() -> None:
     log.info("Proactive intelligence loop started")
 
     # Stagger startup to avoid collision with startup sequence
-    await asyncio.sleep(30)
+    await asyncio.sleep(
+        max(3, int(getattr(config, "PROACTIVE_STARTUP_DELAY_SECONDS", 8)))
+    )
+
+    sleep_seconds = LOOP_INTERVAL
 
     while True:
         try:
@@ -947,7 +1019,30 @@ async def proactive_loop() -> None:
             await _check_end_of_day()
             await _check_ambient_pulse()
             await _check_presence_ping()
+            await _check_mentor_proactive()
+            _state["consecutive_errors"] = 0
+            if _state["health_state"] != "active":
+                _state["health_state"] = "recovering"
+            sleep_seconds = LOOP_INTERVAL
         except Exception as e:
             log.debug(f"Proactive loop tick error: {e}")
+            _state["consecutive_errors"] = int(_state.get("consecutive_errors", 0)) + 1
+            if _state["consecutive_errors"] >= 3:
+                _state["health_state"] = "degraded"
+            # Exponential backoff to prevent hot error loops
+            sleep_seconds = min(
+                int(getattr(config, "PROACTIVE_BACKOFF_MAX_SECONDS", 300)),
+                max(LOOP_INTERVAL, sleep_seconds * 2),
+            )
 
-        await asyncio.sleep(LOOP_INTERVAL)
+        await asyncio.sleep(max(5, int(sleep_seconds)))
+
+
+def get_proactive_health() -> dict:
+    return {
+        "state": _state.get("health_state", "active"),
+        "consecutive_errors": int(_state.get("consecutive_errors", 0) or 0),
+        "last_spoken_ts": float(_state.get("last_spoken_ts", 0.0) or 0.0),
+        "last_presence_ping_ts": float(_state.get("last_presence_ping_ts", 0.0) or 0.0),
+        "last_ambient_pulse_ts": float(_state.get("last_ambient_pulse_ts", 0.0) or 0.0),
+    }

@@ -299,6 +299,10 @@ def _handle_slash_command(text: str) -> str | None:
         from actions.capabilities import capability_summary_text
         from actions.permissions import check_permissions
         from brain.llm import get_client
+        from brain.mentor_proactive import get_mentor_proactive_stats
+        from brain.proactive import get_proactive_health
+        from brain.reasoning import get_retaindb_context_stats
+        from brain.agi import get_agi
 
         lines = ["## Marrow Doctor"]
         runtime_warning = _python_runtime_warning()
@@ -333,6 +337,54 @@ def _handle_slash_command(text: str) -> str | None:
                     )
         except Exception as e:
             lines.append(f"- Runtime components: unavailable ({e})")
+
+        try:
+            ms = get_mentor_proactive_stats()
+            lines.append(
+                "- Mentor proactive stats: "
+                f"runs={ms.get('runs')} sent={ms.get('sent')} "
+                f"gate_rejected={ms.get('gate_rejected')} critic_rejected={ms.get('critic_rejected')} "
+                f"buffer={ms.get('buffer_messages')} silence={ms.get('silence_detected')}"
+            )
+        except Exception as e:
+            lines.append(f"- Mentor proactive stats: unavailable ({e})")
+
+        try:
+            ph = get_proactive_health()
+            lines.append(
+                f"- Proactive health: state={ph.get('state')} errors={ph.get('consecutive_errors')}"
+            )
+        except Exception as e:
+            lines.append(f"- Proactive health: unavailable ({e})")
+
+        try:
+            rs = get_retaindb_context_stats()
+            lines.append(
+                "- RetainDB context cache: "
+                f"ctx_cached={rs.get('ctx_cached')} ctx_chars={rs.get('ctx_chars')} "
+                f"profile_cached={rs.get('profile_cached')} profile_chars={rs.get('profile_chars')}"
+            )
+        except Exception as e:
+            lines.append(f"- RetainDB context cache: unavailable ({e})")
+
+        try:
+            counts = db.get_proactive_decision_counts(window_seconds=3600)
+            if counts:
+                lines.append("- Proactive decision counts (last 1h):")
+                for row in counts[:20]:
+                    lines.append(
+                        f"  - {row.get('lane')}/{row.get('stage')}/{row.get('status')}: {row.get('n')}"
+                    )
+        except Exception as e:
+            lines.append(f"- Proactive decision counts: unavailable ({e})")
+
+        try:
+            agi_stats = get_agi().get_stats()
+            lines.append(
+                f"- AGI: open_gaps={agi_stats.get('open_gaps')} retry_queue={agi_stats.get('ingest_retry_queue')}"
+            )
+        except Exception as e:
+            lines.append(f"- AGI stats: unavailable ({e})")
 
         lines.append("")
         lines.append(capability_summary_text())
@@ -372,7 +424,20 @@ def _handle_slash_command(text: str) -> str | None:
                 "PROACTIVE_SIGNAL_DEDUP_SECONDS",
                 str(config.PROACTIVE_SIGNAL_DEDUP_SECONDS),
             )
-            return f"Proactive: min_urgency={min_u}, auto_speak_min={auto_min}, speech_gap={gap}s, dedup={dedup}s"
+            toast_min = os.environ.get(
+                "PROACTIVE_TOAST_MIN_URGENCY",
+                str(config.PROACTIVE_TOAST_MIN_URGENCY),
+            )
+            force_toast = os.environ.get(
+                "PROACTIVE_FORCE_TOAST_WHEN_AUDIO_UNAVAILABLE",
+                "1" if config.PROACTIVE_FORCE_TOAST_WHEN_AUDIO_UNAVAILABLE else "0",
+            )
+            return (
+                "Proactive: "
+                f"min_urgency={min_u}, auto_speak_min={auto_min}, "
+                f"speech_gap={gap}s, dedup={dedup}s, toast_min={toast_min}, "
+                f"force_toast_no_audio={force_toast}"
+            )
         mode = args[0].lower()
         profiles = {
             "quiet": {
@@ -380,18 +445,21 @@ def _handle_slash_command(text: str) -> str | None:
                 "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "4",
                 "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "120",
                 "PROACTIVE_SIGNAL_DEDUP_SECONDS": "600",
+                "PROACTIVE_TOAST_MIN_URGENCY": "2",
             },
             "normal": {
                 "PROACTIVE_SPEECH_MIN_URGENCY": "3",
                 "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "3",
                 "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "60",
                 "PROACTIVE_SIGNAL_DEDUP_SECONDS": "420",
+                "PROACTIVE_TOAST_MIN_URGENCY": "1",
             },
             "talkative": {
                 "PROACTIVE_SPEECH_MIN_URGENCY": "2",
                 "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "2",
                 "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "30",
                 "PROACTIVE_SIGNAL_DEDUP_SECONDS": "180",
+                "PROACTIVE_TOAST_MIN_URGENCY": "1",
             },
         }
         if mode not in profiles:

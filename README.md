@@ -153,6 +153,7 @@ On startup, Marrow enforces a default profile so it behaves conversationally and
 - `PROACTIVE_SIGNAL_DEDUP_SECONDS=180`
 - `LIVE_KICKOFF_ENABLED=1`
 - `LIVE_KICKOFF_DELAY_SECONDS=12`
+- `MENTOR_PROACTIVE_ENABLED=1` (buffered gate/generate/critic lane)
 
 This means you should not need to run `/proactive talkative` or `/conversation on` manually every launch.
 
@@ -164,6 +165,10 @@ LLM_PROVIDER=auto
 # Optional cloud keys
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
+RETAINDB_API_KEY=
+RETAINDB_PROJECT=marrow
+RETAINDB_CONTEXT_REFRESH_SECONDS=75
+RETAINDB_PROFILE_REFRESH_SECONDS=300
 
 # Local models
 OLLAMA_BASE_URL=http://localhost:11434
@@ -197,6 +202,21 @@ PROACTIVE_SPEECH_MIN_URGENCY=2
 PROACTIVE_AUTO_SPEAK_MIN_URGENCY=2
 PROACTIVE_SPEECH_MIN_GAP_SECONDS=30
 PROACTIVE_SIGNAL_DEDUP_SECONDS=180
+PROACTIVE_TOAST_MIN_URGENCY=1
+PROACTIVE_FORCE_TOAST_WHEN_AUDIO_UNAVAILABLE=1
+PROACTIVE_STARTUP_DELAY_SECONDS=8
+PROACTIVE_BACKOFF_MAX_SECONDS=300
+
+# Mentor proactive lane
+MENTOR_PROACTIVE_ENABLED=1
+MENTOR_CONTEXT_WINDOW_SECONDS=240
+MENTOR_MAX_BUFFER_MESSAGES=50
+MENTOR_MIN_NEW_SEGMENTS_FOR_ANALYSIS=6
+MENTOR_SILENCE_RESET_SECONDS=120
+MENTOR_MIN_WORDS_AFTER_SILENCE=5
+MENTOR_MIN_TRANSCRIPT_CHARS=3
+MENTOR_RATE_LIMIT_SECONDS=120
+MENTOR_MAX_DAILY_NOTIFICATIONS=36
 
 # UI mode
 UI_MODE=orb
@@ -231,6 +251,16 @@ Marrow uses a layered decision flow:
 2. Generate: produce candidate speak/action output.
 3. Critic: validate quality/timing.
 4. Interrupt policy: meeting/flow/cooldown/dedup checks.
+
+Additionally, Marrow runs a buffered mentor-style proactive lane (ported from Omi-style pattern):
+
+- segment buffer with silence reset
+- min-new-segments trigger before analysis
+- gate -> generate -> critic sequence
+- rate-limit and daily-cap controls
+
+`/doctor` now reports mentor proactive stage counters (runs, gate/critic rejections, sends, buffer state).
+It also reports proactive decision-stage counts and AGI ingest retry-queue depth.
 
 The goal is high-signal interruptions without dead silence.
 

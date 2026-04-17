@@ -12,6 +12,8 @@ claim_verifier pipeline.
 
 import re
 import time
+import asyncio
+import hashlib
 
 from storage import db
 
@@ -20,26 +22,56 @@ _TO_NAME_RE = re.compile(r"\bto\s*:\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})")
 
 _MAIL_APPS = {"outlook", "thunderbird", "mail", "spark", "superhuman"}
 _CHAT_APPS = {"slack", "discord", "teams", "telegram", "whatsapp", "signal"}
-_MEETING_APPS = {"zoom", "teams", "meet", "webex", "discord", "slack", "facetime", "skype"}
+_MEETING_APPS = {
+    "zoom",
+    "teams",
+    "meet",
+    "webex",
+    "discord",
+    "slack",
+    "facetime",
+    "skype",
+}
 _MEDIA_APPS = {
-    "chrome", "msedge", "firefox", "brave", "safari",
-    "youtube", "vlc", "mpv", "iina",
-    "x", "reddit", "twitter",
+    "chrome",
+    "msedge",
+    "firefox",
+    "brave",
+    "safari",
+    "youtube",
+    "vlc",
+    "mpv",
+    "iina",
+    "x",
+    "reddit",
+    "twitter",
 }
 
 # Apology / concession patterns — detect user writing an apology to someone
 _APOLOGY_PATTERNS = [
-    re.compile(r"\b(sorry|apologize|apologies|forgive me|my fault|i was wrong)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(sorry|apologize|apologies|forgive me|my fault|i was wrong)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(sincerely apologize|deeply sorry|truly sorry)\b", re.IGNORECASE),
 ]
 
 # Claim-like language in media/audio — any strong factual assertion
 _STRONG_CLAIM_PATTERNS = [
-    re.compile(r"\b(is|was|are|were)\s+(alive|dead|fake|real|innocent|guilty)\b", re.IGNORECASE),
-    re.compile(r"\b(they\s+lied|cover[\s-]?up|government\s+hid|secret\s+deal)\b", re.IGNORECASE),
-    re.compile(r"\b(never\s+happened|didn[''']t\s+happen|was\s+fabricated)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(is|was|are|were)\s+(alive|dead|fake|real|innocent|guilty)\b", re.IGNORECASE
+    ),
+    re.compile(
+        r"\b(they\s+lied|cover[\s-]?up|government\s+hid|secret\s+deal)\b", re.IGNORECASE
+    ),
+    re.compile(
+        r"\b(never\s+happened|didn[''']t\s+happen|was\s+fabricated)\b", re.IGNORECASE
+    ),
     re.compile(r"\b(proven|confirmed|leaked|revealed|exposed)\s+that\b", re.IGNORECASE),
-    re.compile(r"\b(the\s+truth\s+is|the\s+real\s+story|what\s+they\s+don[''']t\s+tell\s+you)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(the\s+truth\s+is|the\s+real\s+story|what\s+they\s+don[''']t\s+tell\s+you)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bcauses?\s+(cancer|autism|death|disease)\b", re.IGNORECASE),
     re.compile(r"\b(did|didn[''']t)\s+kill\b", re.IGNORECASE),
     re.compile(r"\bstill\s+alive\b", re.IGNORECASE),
@@ -59,19 +91,67 @@ _MEETING_PRESENCE_PATTERNS = [
 # Vision model OCR phrases that indicate a person is visible in a video call frame
 # These come from the LLM vision description, not raw text on screen
 _VIDEO_FACE_PATTERNS = [
-    re.compile(r"\b(person|man|woman|individual)\s+(visible|appearing|shown|seen|in\s+(the\s+)?video)\b", re.IGNORECASE),
-    re.compile(r"\bvideo\s+(tile|feed|frame|call|thumbnail)\s+(showing|with|of)\s+(a\s+)?(person|man|woman|face)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(person|man|woman|individual)\s+(visible|appearing|shown|seen|in\s+(the\s+)?video)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bvideo\s+(tile|feed|frame|call|thumbnail)\s+(showing|with|of)\s+(a\s+)?(person|man|woman|face)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(face|head|upper\s+body)\s+visible\s+in\b", re.IGNORECASE),
-    re.compile(r"\b(another|second|third)\s+(person|participant|individual)\b", re.IGNORECASE),
-    re.compile(r"\b(background|behind)\s+.{0,30}\s+(person|man|woman|someone)\b", re.IGNORECASE),
-    re.compile(r"\b(someone|a\s+person)\s+(is\s+)?(in\s+the\s+)?(background|visible|frame|camera)\b", re.IGNORECASE),
-    re.compile(r"\b\d\s+people\s+(visible|in\s+the\s+call|on\s+screen|on\s+camera)\b", re.IGNORECASE),
-    re.compile(r"\b(camera|webcam)\s+shows?\s+(a\s+)?(person|man|woman|face|someone)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(another|second|third)\s+(person|participant|individual)\b", re.IGNORECASE
+    ),
+    re.compile(
+        r"\b(background|behind)\s+.{0,30}\s+(person|man|woman|someone)\b", re.IGNORECASE
+    ),
+    re.compile(
+        r"\b(someone|a\s+person)\s+(is\s+)?(in\s+the\s+)?(background|visible|frame|camera)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b\d\s+people\s+(visible|in\s+the\s+call|on\s+screen|on\s+camera)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(camera|webcam)\s+shows?\s+(a\s+)?(person|man|woman|face|someone)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 # Dedup: track last observation timestamps to avoid spamming
 _last_face_signal_ts: float = 0.0
-_FACE_DEDUP_SECS = 120   # only record a new face observation every 2 min
+_FACE_DEDUP_SECS = 120  # only record a new face observation every 2 min
+
+# Task/deadline/intent extraction (strong actionable context)
+_TASK_PATTERNS = [
+    re.compile(
+        r"\b(todo|to do|next step|action item|follow up|follow-up)\b", re.IGNORECASE
+    ),
+    re.compile(
+        r"\b(ship|deploy|merge|fix|refactor|implement|review|reply|send|schedule)\b",
+        re.IGNORECASE,
+    ),
+]
+_DEADLINE_PATTERNS = [
+    re.compile(
+        r"\b(due\s+today|due\s+tomorrow|deadline|by\s+\d{1,2}(:\d{2})?\s*(am|pm)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(eod|end\s+of\s+day|this\s+week|by\s+friday|urgent|asap)\b", re.IGNORECASE
+    ),
+]
+_DECISION_PATTERNS = [
+    re.compile(
+        r"\b(should\s+we|should\s+i|decide|decision|pick\s+one|option\s+a|option\s+b|trade[-\s]?off)\b",
+        re.IGNORECASE,
+    ),
+]
+
+_last_memory_mirror_ts: dict[str, float] = {}
+_MIRROR_DEDUP_SECS = 180
 
 
 def _extract_contact(text: str) -> str:
@@ -82,6 +162,44 @@ def _extract_contact(text: str) -> str:
     if n:
         return n.group(1).strip().lower()
     return ""
+
+
+def _mirror_to_retaindb(obs_type: str, content: str, source: str) -> None:
+    """Fire-and-forget mirror of high-signal context into RetainDB extraction lane."""
+    try:
+        key = hashlib.md5(f"{obs_type}:{content[:180]}".encode("utf-8")).hexdigest()
+        now = time.time()
+        last = _last_memory_mirror_ts.get(key, 0.0)
+        if last and now - last < _MIRROR_DEDUP_SECS:
+            return
+        _last_memory_mirror_ts[key] = now
+
+        from actions.memory import memory_record_observation
+
+        async def _push() -> None:
+            try:
+                await memory_record_observation(
+                    content, obs_type=obs_type, source=source
+                )
+            except Exception:
+                pass
+
+        try:
+            loop = asyncio.get_running_loop()
+            if loop and loop.is_running():
+                asyncio.create_task(_push())
+        except RuntimeError:
+            pass
+    except Exception:
+        pass
+
+
+def _record_observation_with_memory(
+    obs_type: str, content: str, source: str = "screen"
+) -> None:
+    inserted = db.insert_observation(obs_type, content, source=source)
+    if inserted:
+        _mirror_to_retaindb(obs_type, content, source)
 
 
 def _channel_for_app(app_name: str, title: str) -> str:
@@ -136,7 +254,7 @@ def _record_contact_signal(ts: float, app_name: str, title: str, ocr_text: str) 
     # Detect apology drafts — flag as observation so reasoning can notice
     if direction == "outgoing" and action in ("draft", "reply"):
         if any(p.search(ocr_text) for p in _APOLOGY_PATTERNS):
-            db.insert_observation(
+            _record_observation_with_memory(
                 "apology_draft",
                 f"User appears to be drafting an apology to {contact} via {channel}.",
                 source="screen",
@@ -197,7 +315,7 @@ def _record_claim_signal(
             )
         else:
             # Store raw signal for next reasoning cycle to pick up
-            db.insert_observation(
+            _record_observation_with_memory(
                 "claim_signal_pending",
                 f"Possible claim in {source}: {claim_text[:200]}",
                 source=source,
@@ -217,13 +335,14 @@ def _record_meeting_presence_signal(
     app = (app_name or "").lower()
     combined = f"{title}\n{focused_context}\n{ocr_text}".lower()
     in_call_app = app in _MEETING_APPS or any(
-        k in combined for k in ["zoom", "meeting", "call", "facetime", "webex", "google meet"]
+        k in combined
+        for k in ["zoom", "meeting", "call", "facetime", "webex", "google meet"]
     )
 
     # Standard participant text patterns
     if in_call_app and any(p.search(combined) for p in _MEETING_PRESENCE_PATTERNS):
         evidence = f"{title} | {focused_context} | {ocr_text}"[:500]
-        db.insert_observation(
+        _record_observation_with_memory(
             "meeting_presence_signal",
             f"Possible additional participant/presence change detected in active call. Evidence: {evidence}",
             source="screen",
@@ -237,7 +356,7 @@ def _record_meeting_presence_signal(
             _last_face_signal_ts = ts
             # Extract a short excerpt for context
             excerpt = ocr_text[:300].replace("\n", " ")
-            db.insert_observation(
+            _record_observation_with_memory(
                 "video_call_face_detected",
                 (
                     f"Vision model detected a person visible in video call frame "
@@ -246,6 +365,39 @@ def _record_meeting_presence_signal(
                 ),
                 source="screen",
             )
+
+
+def _record_intent_and_deadline_signals(
+    ts: float,
+    app_name: str,
+    title: str,
+    ocr_text: str,
+    transcript_text: str = "",
+) -> None:
+    combined = f"{title}\n{ocr_text}\n{transcript_text}".strip()
+    if not combined:
+        return
+
+    if any(p.search(combined) for p in _TASK_PATTERNS):
+        _record_observation_with_memory(
+            "task_signal",
+            f"Likely actionable task detected in {app_name}: {combined[:220]}",
+            source="screen",
+        )
+
+    if any(p.search(combined) for p in _DEADLINE_PATTERNS):
+        _record_observation_with_memory(
+            "deadline_signal",
+            f"Possible deadline/urgency signal in {app_name}: {combined[:220]}",
+            source="screen",
+        )
+
+    if any(p.search(combined) for p in _DECISION_PATTERNS):
+        _record_observation_with_memory(
+            "decision_signal",
+            f"Possible decision point detected in {app_name}: {combined[:220]}",
+            source="screen",
+        )
 
 
 def process_screen_signals(
@@ -260,6 +412,7 @@ def process_screen_signals(
     _record_contact_signal(ts, app_name, title, ocr_text)
     _record_claim_signal(ts, app_name, title, ocr_text, transcript_text)
     _record_meeting_presence_signal(ts, app_name, title, ocr_text, focused_context)
+    _record_intent_and_deadline_signals(ts, app_name, title, ocr_text, transcript_text)
 
 
 def build_high_signal_context() -> str:
@@ -294,7 +447,7 @@ def build_high_signal_context() -> str:
             lines.append("=== LONG-HORIZON CONTEXT ===")
         for c in claims:
             lines.append(
-                f"- Claim detected [{c.get('source_app', 'media')}]: \"{c['claim'][:100]}\""
+                f'- Claim detected [{c.get("source_app", "media")}]: "{c["claim"][:100]}"'
             )
             if c.get("verdict"):
                 lines.append(f"  Verdict: {c['verdict'][:200]}")

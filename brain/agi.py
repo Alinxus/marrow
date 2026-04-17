@@ -55,6 +55,7 @@ log = logging.getLogger(__name__)
 
 # ─── Gap tracking persisted locally ───────────────────────────────────────────
 GAP_PATH = Path.home() / ".marrow" / "gaps.json"
+INGEST_RETRY_PATH = Path.home() / ".marrow" / "ingest_retry_queue.json"
 
 
 def _load_gaps() -> list[dict]:
@@ -74,6 +75,27 @@ def _save_gaps(gaps: list[dict]) -> None:
         pass
 
 
+def _load_ingest_retry_queue() -> list[dict]:
+    try:
+        if INGEST_RETRY_PATH.exists():
+            data = json.loads(INGEST_RETRY_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data[:120]
+    except Exception:
+        pass
+    return []
+
+
+def _save_ingest_retry_queue(items: list[dict]) -> None:
+    try:
+        INGEST_RETRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        INGEST_RETRY_PATH.write_text(
+            json.dumps(items[-120:], indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
 class MarrowAGI:
     """
     Self-improving personal intelligence engine.
@@ -88,13 +110,14 @@ class MarrowAGI:
         self._last_gap_detect = 0.0
         self._last_graph_fetch = 0.0
         self._last_project_sync = 0.0
-        self._last_ingest_id = 0       # last transcript id ingested
-        self._last_extract_id = 0      # last observation id extracted
+        self._last_ingest_id = 0  # last transcript id ingested
+        self._last_extract_id = 0  # last observation id extracted
         self._open_gaps: list[dict] = _load_gaps()
-        self._project_id_map: dict[str, str] = {}   # project_name → retaindb id
+        self._project_id_map: dict[str, str] = {}  # project_name → retaindb id
         self._graph_summary: str = ""
         self._session_counter = 0
         self._running = False
+        self._ingest_retry_queue: list[dict] = _load_ingest_retry_queue()
 
     # ─── Main loop ──────────────────────────────────────────────────────────
 
@@ -112,6 +135,7 @@ class MarrowAGI:
 
                 # Session ingest every 5 min
                 if now - self._last_session_ingest > 300:
+                    await self._flush_ingest_retry_queue(max_items=2)
                     await self._ingest_session()
 
                 # Memory extraction every 3 min
@@ -142,6 +166,59 @@ class MarrowAGI:
     def stop(self) -> None:
         self._running = False
 
+    def _enqueue_ingest_retry(
+        self, session_id: str, events: list[dict], metadata: dict, error: str
+    ) -> None:
+        self._ingest_retry_queue.append(
+            {
+                "session_id": session_id,
+                "events": events,
+                "metadata": metadata,
+                "retries": 0,
+                "enqueued_at": time.time(),
+                "last_error": (error or "")[:220],
+            }
+        )
+        self._ingest_retry_queue = self._ingest_retry_queue[-120:]
+        _save_ingest_retry_queue(self._ingest_retry_queue)
+
+    async def _flush_ingest_retry_queue(self, max_items: int = 3) -> None:
+        if not self._ingest_retry_queue:
+            return
+
+        from actions.memory import get_memory_client
+
+        client = get_memory_client()
+        if not client:
+            return
+
+        remaining: list[dict] = []
+        processed = 0
+        for item in self._ingest_retry_queue:
+            if processed >= max_items:
+                remaining.append(item)
+                continue
+            processed += 1
+            try:
+                result = await client.ingest_session(
+                    session_id=item.get("session_id") or f"retry_{int(time.time())}",
+                    events=item.get("events") or [],
+                    metadata=item.get("metadata") or {"source": "retry_queue"},
+                )
+                if result.get("error"):
+                    item["retries"] = int(item.get("retries", 0)) + 1
+                    item["last_error"] = str(result.get("error"))[:220]
+                    if item["retries"] <= 5:
+                        remaining.append(item)
+            except Exception as e:
+                item["retries"] = int(item.get("retries", 0)) + 1
+                item["last_error"] = str(e)[:220]
+                if item["retries"] <= 5:
+                    remaining.append(item)
+
+        self._ingest_retry_queue = remaining[-120:]
+        _save_ingest_retry_queue(self._ingest_retry_queue)
+
     # ─── Session Ingestion ───────────────────────────────────────────────────
 
     async def _ingest_session(self) -> None:
@@ -153,6 +230,7 @@ class MarrowAGI:
         events, decisions — structured memories you can later query.
         """
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
@@ -179,22 +257,26 @@ class MarrowAGI:
 
             # Transcripts become user turns
             for row in transcripts:
-                events.append({
-                    "role": "user",
-                    "content": row["text"],
-                    "ts": row["ts"],
-                })
+                events.append(
+                    {
+                        "role": "user",
+                        "content": row["text"],
+                        "ts": row["ts"],
+                    }
+                )
                 if row["id"] > self._last_ingest_id:
                     self._last_ingest_id = row["id"]
 
             # Screen observations become system context
             for row in observations:
                 if row["type"] in ("screen", "app", "screen_summary"):
-                    events.append({
-                        "role": "system",
-                        "content": f"[{row['source']}] {row['content']}",
-                        "ts": row["ts"],
-                    })
+                    events.append(
+                        {
+                            "role": "system",
+                            "content": f"[{row['source']}] {row['content']}",
+                            "ts": row["ts"],
+                        }
+                    )
 
             if not events:
                 self._last_session_ingest = time.time()
@@ -205,17 +287,31 @@ class MarrowAGI:
 
             self._session_counter += 1
             session_id = f"marrow_session_{int(time.time())}_{self._session_counter}"
+            ingest_events = [
+                {"role": e["role"], "content": e["content"]} for e in events
+            ]
+            ingest_meta = {
+                "source": "marrow_ambient",
+                "event_count": len(events),
+                "ts": time.time(),
+            }
 
             # Fire-and-forget to RetainDB
             result = await client.ingest_session(
                 session_id=session_id,
-                events=[{"role": e["role"], "content": e["content"]} for e in events],
-                metadata={
-                    "source": "marrow_ambient",
-                    "event_count": len(events),
-                    "ts": time.time(),
-                },
+                events=ingest_events,
+                metadata=ingest_meta,
             )
+
+            if result.get("error"):
+                self._enqueue_ingest_retry(
+                    session_id=session_id,
+                    events=ingest_events,
+                    metadata=ingest_meta,
+                    error=str(result.get("error")),
+                )
+                log.debug(f"AGI session ingest queued for retry: {result.get('error')}")
+                return
 
             job_id = result.get("job_id") or result.get("id")
             log.info(f"AGI: session ingested ({len(events)} events, job={job_id})")
@@ -223,6 +319,20 @@ class MarrowAGI:
 
         except Exception as e:
             log.debug(f"AGI session ingest error: {e}")
+            try:
+                if (
+                    "session_id" in locals()
+                    and "ingest_events" in locals()
+                    and "ingest_meta" in locals()
+                ):
+                    self._enqueue_ingest_retry(
+                        session_id=session_id,
+                        events=ingest_events,
+                        metadata=ingest_meta,
+                        error=str(e),
+                    )
+            except Exception:
+                pass
 
     # ─── Memory Extraction ───────────────────────────────────────────────────
 
@@ -233,6 +343,7 @@ class MarrowAGI:
         Much richer than a raw add_memory call.
         """
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
@@ -251,12 +362,18 @@ class MarrowAGI:
                 return
 
             # Batch into one extract call to save API credits
-            combined = "\n".join(f"[{o['type']}|{o['source']}] {o['content']}" for o in obs)
-            result = await client.extract_memory(combined, context="ambient_observations")
+            combined = "\n".join(
+                f"[{o['type']}|{o['source']}] {o['content']}" for o in obs
+            )
+            result = await client.extract_memory(
+                combined, context="ambient_observations"
+            )
 
             extracted = result.get("memories", [])
             if extracted:
-                log.info(f"AGI: extracted {len(extracted)} typed memories from {len(obs)} observations")
+                log.info(
+                    f"AGI: extracted {len(extracted)} typed memories from {len(obs)} observations"
+                )
 
             # Advance pointer
             max_id = max(o["id"] for o in obs)
@@ -275,6 +392,7 @@ class MarrowAGI:
         working style, frequent entities, trust score.
         """
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
@@ -286,6 +404,7 @@ class MarrowAGI:
 
             # Merge into wiki
             from brain.wiki import get_wiki
+
             wiki = get_wiki()
 
             # Preferences
@@ -297,16 +416,22 @@ class MarrowAGI:
             # Goals
             goals = model.get("goals", [])
             if isinstance(goals, list):
-                existing_goals = {g.get("goal", "") for g in wiki._wiki.get("goals", []) if isinstance(g, dict)}
+                existing_goals = {
+                    g.get("goal", "")
+                    for g in wiki._wiki.get("goals", [])
+                    if isinstance(g, dict)
+                }
                 for g in goals:
                     goal_text = g if isinstance(g, str) else g.get("goal", str(g))
                     if goal_text and goal_text not in existing_goals:
-                        wiki._wiki.setdefault("goals", []).append({
-                            "goal": goal_text,
-                            "priority": "medium",
-                            "status": "active",
-                            "source": "retaindb",
-                        })
+                        wiki._wiki.setdefault("goals", []).append(
+                            {
+                                "goal": goal_text,
+                                "priority": "medium",
+                                "status": "active",
+                                "source": "retaindb",
+                            }
+                        )
 
             # Frequent entities → people section
             entities = model.get("frequent_entities", [])
@@ -315,7 +440,9 @@ class MarrowAGI:
                     name = e if isinstance(e, str) else e.get("name", "")
                     if name and name not in wiki._wiki.get("people", {}):
                         wiki._wiki.setdefault("people", {})[name] = {
-                            "role": e.get("type", "unknown") if isinstance(e, dict) else "unknown",
+                            "role": e.get("type", "unknown")
+                            if isinstance(e, dict)
+                            else "unknown",
                             "relationship": "frequent_contact",
                             "context": "detected by RetainDB",
                             "source": "retaindb_profile",
@@ -344,6 +471,7 @@ class MarrowAGI:
         it's learned immediately via /v1/learn.
         """
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
@@ -365,12 +493,14 @@ class MarrowAGI:
                 q = gap if isinstance(gap, str) else gap.get("question", str(gap))
                 priority = gap.get("priority", 5) if isinstance(gap, dict) else 5
                 if q and q not in existing_questions:
-                    new_gaps.append({
-                        "question": q,
-                        "priority": priority,
-                        "detected_at": time.time(),
-                        "answered": False,
-                    })
+                    new_gaps.append(
+                        {
+                            "question": q,
+                            "priority": priority,
+                            "detected_at": time.time(),
+                            "answered": False,
+                        }
+                    )
 
             self._open_gaps = sorted(
                 self._open_gaps + new_gaps,
@@ -397,6 +527,7 @@ class MarrowAGI:
             return
 
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
@@ -407,6 +538,7 @@ class MarrowAGI:
             return
 
         from brain.llm import get_client as get_llm
+
         llm = get_llm()
 
         questions = "\n".join(f"- {g['question']}" for g in open_gaps)
@@ -443,11 +575,17 @@ Return ONLY JSON."""
                 a = ans.get("answer", "")
                 if q and a:
                     # Learn via RetainDB
-                    asyncio.create_task(client.learn([{
-                        "content": f"Q: {q}\nA: {a}",
-                        "topic": "user_profile",
-                        "confidence": 0.8,
-                    }]))
+                    asyncio.create_task(
+                        client.learn(
+                            [
+                                {
+                                    "content": f"Q: {q}\nA: {a}",
+                                    "topic": "user_profile",
+                                    "confidence": 0.8,
+                                }
+                            ]
+                        )
+                    )
                     # Mark as answered in local list
                     for gap in self._open_gaps:
                         if gap["question"] == q:
@@ -469,12 +607,14 @@ Return ONLY JSON."""
         Ingests new observations relevant to each project.
         """
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
 
         try:
             from brain.wiki import get_wiki
+
             wiki = get_wiki()
             wiki_projects = wiki._wiki.get("projects", {})
             if not wiki_projects:
@@ -512,9 +652,12 @@ Return ONLY JSON."""
         except Exception as e:
             log.debug(f"AGI project sync error: {e}")
 
-    async def ingest_into_project(self, content: str, project_name: str, source: str = "screen") -> None:
+    async def ingest_into_project(
+        self, content: str, project_name: str, source: str = "screen"
+    ) -> None:
         """Ingest content into a specific RetainDB project."""
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
@@ -537,6 +680,7 @@ Return ONLY JSON."""
         the LLM wiki updater might not capture.
         """
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
@@ -586,6 +730,7 @@ Return ONLY JSON."""
         Falls back to semantic search, then local.
         """
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return ""
@@ -615,18 +760,25 @@ Return ONLY JSON."""
 
     # ─── Learn Verified Facts ────────────────────────────────────────────────
 
-    async def learn_fact(self, fact: str, topic: str = "user_profile", confidence: float = 0.85) -> None:
+    async def learn_fact(
+        self, fact: str, topic: str = "user_profile", confidence: float = 0.85
+    ) -> None:
         """Teach a high-confidence fact directly to RetainDB's learn endpoint."""
         from actions.memory import get_memory_client
+
         client = get_memory_client()
         if not client:
             return
         try:
-            await client.learn([{
-                "content": fact,
-                "topic": topic,
-                "confidence": confidence,
-            }])
+            await client.learn(
+                [
+                    {
+                        "content": fact,
+                        "topic": topic,
+                        "confidence": confidence,
+                    }
+                ]
+            )
             log.debug(f"AGI learned: {fact[:60]}")
         except Exception as e:
             log.debug(f"AGI learn error: {e}")
@@ -650,12 +802,19 @@ Return ONLY JSON."""
             "answered_gaps": len(answered),
             "projects_tracked": len(self._project_id_map),
             "sessions_ingested": self._session_counter,
-            "last_session_ingest": datetime.fromtimestamp(self._last_session_ingest).isoformat()
-            if self._last_session_ingest else "never",
-            "last_profile_sync": datetime.fromtimestamp(self._last_profile_sync).isoformat()
-            if self._last_profile_sync else "never",
+            "last_session_ingest": datetime.fromtimestamp(
+                self._last_session_ingest
+            ).isoformat()
+            if self._last_session_ingest
+            else "never",
+            "last_profile_sync": datetime.fromtimestamp(
+                self._last_profile_sync
+            ).isoformat()
+            if self._last_profile_sync
+            else "never",
             "top_gaps": [g["question"][:80] for g in open_gaps[:3]],
             "graph_connections": self._graph_summary.count("→"),
+            "ingest_retry_queue": len(self._ingest_retry_queue),
         }
 
 
