@@ -160,7 +160,10 @@ def _apply_settings_updates(updates: dict[str, str]) -> str:
         existing[k] = str(v)
         os.environ[k] = str(v)
 
-    lines = [f'{k}="{str(v).replace('"', '\\"')}"\n' for k, v in existing.items()]
+    lines = []
+    for k, v in existing.items():
+        escaped = str(v).replace('"', '\\"')
+        lines.append(f'{k}="{escaped}"\n')
     env_path.write_text("".join(lines), encoding="utf-8")
 
     # Hot apply runtime config + llm client
