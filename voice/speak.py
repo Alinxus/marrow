@@ -17,14 +17,18 @@ Omi reference:
 """
 
 import asyncio
+import io
 import logging
 import platform
 import queue
 import random
+import re
 import threading
 import time
+import wave
 from typing import Optional
 
+import httpx
 import numpy as np
 import sounddevice as sd
 
@@ -73,6 +77,15 @@ async def speak(text: str) -> None:
     """
     async with _speaking_lock:
         _cancel_event.clear()
+        text = _prepare_tts_text(text)
+        if not text:
+            return
+        if config.DEEPGRAM_API_KEY and config.DEEPGRAM_TTS_ENABLED:
+            try:
+                await _speak_deepgram(text)
+                return
+            except Exception as e:
+                log.warning(f"Deepgram TTS failed: {e}")
         if config.ELEVENLABS_API_KEY:
             try:
                 await _speak_elevenlabs(text)
@@ -105,6 +118,116 @@ async def speak_filler() -> None:
 def cancel_speaking() -> None:
     """Signal the current speech to stop. Safe to call from any thread."""
     _cancel_event.set()
+
+
+def _prepare_tts_text(text: str) -> str:
+    """Normalize assistant output into natural spoken text."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+
+    # Remove markdown/code artifacts.
+    t = re.sub(r"`([^`]*)`", r"\1", t)
+    t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)
+    t = re.sub(r"\[(.*?)\]\((.*?)\)", r"\1", t)
+
+    # Convert bullets/newlines to sentence pauses.
+    t = t.replace("\r", "\n")
+    t = re.sub(r"\n\s*[-*]\s+", ". ", t)
+    t = re.sub(r"\n+", ". ", t)
+
+    # Remove obvious path/URL noise that sounds robotic.
+    t = re.sub(r"https?://\S+", "", t)
+    t = re.sub(r"[A-Za-z]:\\[^\s,;]+", "", t)
+
+    # Normalize whitespace and punctuation.
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\.\s*\.\s*\.", ".", t)
+    t = re.sub(r"\s+([,.!?])", r"\1", t)
+
+    # Keep speech concise to avoid monotone long reads.
+    return t[:520].strip()
+
+
+# ─── Deepgram Aura TTS ────────────────────────────────────────────────────────
+
+
+def _play_deepgram_audio_bytes(
+    audio_bytes: bytes, sample_rate_hint: int = 24000
+) -> None:
+    if not audio_bytes:
+        return
+    if _cancel_event.is_set():
+        return
+
+    # Preferred path: WAV container
+    if audio_bytes[:4] == b"RIFF":
+        with io.BytesIO(audio_bytes) as bio:
+            with wave.open(bio, "rb") as wf:
+                channels = wf.getnchannels()
+                sample_rate = wf.getframerate()
+                sample_width = wf.getsampwidth()
+                if sample_width != 2:
+                    raise RuntimeError(f"Unsupported WAV sample width: {sample_width}")
+
+                with sd.RawOutputStream(
+                    samplerate=sample_rate,
+                    channels=channels,
+                    dtype="int16",
+                    blocksize=4096,
+                ) as stream:
+                    while not _cancel_event.is_set():
+                        frames = wf.readframes(4096)
+                        if not frames:
+                            break
+                        stream.write(frames)
+        return
+
+    # Fallback: raw linear16 PCM payload
+    if len(audio_bytes) % 2 != 0:
+        raise RuntimeError("Deepgram audio payload is not WAV or linear16 PCM")
+    with sd.RawOutputStream(
+        samplerate=sample_rate_hint,
+        channels=1,
+        dtype="int16",
+        blocksize=4096,
+    ) as stream:
+        idx = 0
+        step = 8192
+        total = len(audio_bytes)
+        while idx < total and not _cancel_event.is_set():
+            stream.write(audio_bytes[idx : idx + step])
+            idx += step
+
+
+async def _speak_deepgram(text: str) -> None:
+    model = (config.DEEPGRAM_TTS_MODEL or "aura-2-thalia-en").strip()
+    if config.DEEPGRAM_TTS_VOICE.strip():
+        model = config.DEEPGRAM_TTS_VOICE.strip()
+
+    # Request explicit WAV to avoid format ambiguity.
+    sample_rate = 24000
+    url = (
+        "https://api.deepgram.com/v1/speak"
+        f"?model={model}&encoding=linear16&container=wav&sample_rate={sample_rate}"
+    )
+    headers = {
+        "Authorization": f"Token {config.DEEPGRAM_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "audio/wav",
+    }
+    payload = {"text": text}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code >= 300:
+            raise RuntimeError(f"Deepgram HTTP {resp.status_code}: {resp.text[:180]}")
+        audio_bytes = resp.content
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, _play_deepgram_audio_bytes, audio_bytes, sample_rate
+    )
 
 
 # ─── ElevenLabs streaming ──────────────────────────────────────────────────────

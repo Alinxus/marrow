@@ -971,7 +971,12 @@ async def _main_async() -> None:
         log.info("  Reasoning : unknown")
     log.info(f"  Whisper   : {config.WHISPER_MODEL}")
     if config.VOICE_ENABLED:
-        voice_mode = "ElevenLabs" if config.ELEVENLABS_API_KEY else "local/system TTS"
+        if config.DEEPGRAM_API_KEY and config.DEEPGRAM_TTS_ENABLED:
+            voice_mode = f"Deepgram Aura ({config.DEEPGRAM_TTS_MODEL})"
+        elif config.ELEVENLABS_API_KEY:
+            voice_mode = "ElevenLabs"
+        else:
+            voice_mode = "local/system TTS"
     else:
         voice_mode = "off"
     log.info(f"  Voice     : {voice_mode}")

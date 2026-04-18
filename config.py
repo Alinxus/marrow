@@ -80,6 +80,9 @@ DEEPGRAM_RECONNECT_BASE_SECONDS = float(
 )
 DEEPGRAM_VAD_GATE_ENABLED = os.environ.get("DEEPGRAM_VAD_GATE_ENABLED", "1") != "0"
 DEEPGRAM_VAD_HANGOVER_MS = int(os.environ.get("DEEPGRAM_VAD_HANGOVER_MS", "650"))
+DEEPGRAM_TTS_ENABLED = os.environ.get("DEEPGRAM_TTS_ENABLED", "1") == "1"
+DEEPGRAM_TTS_MODEL = os.environ.get("DEEPGRAM_TTS_MODEL", "aura-2-luna-en")
+DEEPGRAM_TTS_VOICE = os.environ.get("DEEPGRAM_TTS_VOICE", "")
 SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.01"))
 
 # Actions
@@ -251,8 +254,9 @@ PROACTIVE_BACKOFF_MAX_SECONDS = int(
     os.environ.get("PROACTIVE_BACKOFF_MAX_SECONDS", "300")
 )
 PROACTIVE_AMBIENT_PULSE_ENABLED = (
-    os.environ.get("PROACTIVE_AMBIENT_PULSE_ENABLED", "0") == "1"
+    os.environ.get("PROACTIVE_AMBIENT_PULSE_ENABLED", "1") == "1"
 )
+# Presence ping is intentionally disabled by default; it can feel noisy.
 PROACTIVE_PRESENCE_PING_ENABLED = (
     os.environ.get("PROACTIVE_PRESENCE_PING_ENABLED", "0") == "1"
 )
