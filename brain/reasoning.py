@@ -42,6 +42,9 @@ from voice.speak import speak, speak_filler
 
 log = logging.getLogger(__name__)
 
+_last_reasoning_context_hash: str = ""
+_last_reasoning_attempt_ts: float = 0.0
+
 
 # ─── Context building ──────────────────────────────────────────────────────────
 
@@ -63,8 +66,17 @@ def _build_context_summary(context: dict) -> str:
             app = s.get("app_name") or "unknown"
             title = s.get("window_title") or ""
             text = (s.get("ocr_text") or "").strip()
+            raw_ocr = (s.get("ocr_raw_text") or "").strip()
+            vision_text = (s.get("vision_text") or "").strip()
+            payload_json = (s.get("screen_payload_json") or "").strip()
             focused = s.get("focused_context", "")
             chash = s.get("content_hash", "")
+            payload = {}
+            if payload_json:
+                try:
+                    payload = json.loads(payload_json)
+                except Exception:
+                    payload = {}
 
             # Skip if we already included this exact screen content
             if chash and chash in seen_hashes:
@@ -78,7 +90,18 @@ def _build_context_summary(context: dict) -> str:
                 parts.append(f"\n[{app}]")
 
             if text:
-                entry = f"  {title[:80]}\n  {text[:700]}"
+                entry_parts = [f"  {title[:80]}"]
+                if payload.get("metadata"):
+                    meta = payload.get("metadata", {})
+                    if meta.get("url"):
+                        entry_parts.append(f"  URL: {str(meta.get('url'))[:220]}")
+                if vision_text:
+                    entry_parts.append(f"  Vision: {vision_text[:700]}")
+                elif text:
+                    entry_parts.append(f"  Summary: {text[:700]}")
+                if raw_ocr:
+                    entry_parts.append(f"  OCR: {raw_ocr[:900]}")
+                entry = "\n".join(entry_parts)
                 parts.append(entry)
             elif title:
                 parts.append(f"  {title[:80]}")
@@ -397,6 +420,15 @@ Don't over-interpret — just surface it: "Someone joined the call behind her."
 Visible error, repeated failed attempt, clear block.
 Offer the fix, not a suggestion: "The issue is X, here's the fix."
 
+**Decision / trade-off help** (urgency 3-4)
+If the user is clearly choosing between options, deciding what to do next, or circling around a task,
+have an opinion. Be a sharp friend, not a neutral summarizer.
+Say what you think they should do and why in plain language: "Pick option B. It's cheaper, reversible, and good enough for today."
+
+**Momentum / stalled execution** (urgency 2-3)
+If the user has a concrete task in front of them but no clear next move, give the next move.
+Don't ask vague coaching questions. Reduce uncertainty: "Reply to Alex first, then merge the smaller PR."
+
 **Non-obvious connection from memory** (urgency 2-3)
 Something from the user's past directly applies to right now.
 Surface the connection: "You hit this same issue in March — the fix was Y."
@@ -436,6 +468,7 @@ Nothing:
 - Default to silence for low-value chatter, but brief grounded check-ins are allowed when context meaningfully changes.
 - Never narrate what they can already see.
 - Never be generic. Be specific to exactly what's on screen right now.
+- For decisions, trade-offs, and ambiguity: have a grounded opinion instead of staying neutral.
 - Never say "signals", "models", "pipeline", "heuristics" to the user.
 - For verified claims: state the fact, not the uncertainty.
 - Prefer concise language, but allow up to 3-4 sentences when that makes the guidance clearer."""
@@ -444,9 +477,9 @@ Nothing:
 _FREQUENCY_TO_GATE_THRESHOLD = {
     1: 0.92,
     2: 0.85,
-    3: 0.78,
-    4: 0.70,
-    5: 0.60,
+    3: 0.72,
+    4: 0.62,
+    5: 0.54,
 }
 
 _GATE_PROMPT = """You are the proactive notification gate.
@@ -530,6 +563,7 @@ async def _gate_context(full_context: str) -> bool:
         return False
 
     try:
+        t0 = time.time()
         response = await llm.create(
             messages=[
                 {
@@ -612,7 +646,7 @@ async def _critic_approve(message: str, reasoning: str, context: str) -> bool:
         critic = json.loads(raw[start:end])
         approved = bool(critic.get("approved", False))
         confidence = float(critic.get("confidence", 0.5))
-        ok = approved and confidence >= 0.55
+        ok = approved and confidence >= 0.45
         critic_ms = (time.time() - t0) * 1000.0
         log.debug(f"Critic: approved={approved} confidence={confidence:.2f} pass={ok}")
         db.insert_proactive_decision(
@@ -648,6 +682,8 @@ async def reasoning_loop(
     """
     log.info(f"Reasoning loop started (interval: {config.REASONING_INTERVAL}s)")
     await asyncio.sleep(config.REASONING_INTERVAL)
+
+    global _last_reasoning_attempt_ts, _last_reasoning_context_hash
 
     cycle_index = 0
     cached_memory_context = ""
@@ -695,6 +731,21 @@ async def reasoning_loop(
                     ],
                 )
             )
+
+            context_hash = hashlib.md5(
+                full_context[: config.REASONING_CONTEXT_CHAR_LIMIT].encode("utf-8")
+            ).hexdigest()
+            refresh_after = max(config.REASONING_INTERVAL * 4, 90)
+            if (
+                context_hash == _last_reasoning_context_hash
+                and (time.time() - _last_reasoning_attempt_ts) < refresh_after
+            ):
+                log.debug("Reasoning skipped: context unchanged")
+                elapsed = time.time() - cycle_start
+                await asyncio.sleep(max(0.0, config.REASONING_INTERVAL - elapsed))
+                continue
+            _last_reasoning_context_hash = context_hash
+            _last_reasoning_attempt_ts = time.time()
 
             # Gate first (Omi-style): skip interruption generation on low-value moments
             gate_passed = await _gate_context(full_context)
@@ -898,7 +949,7 @@ async def _handle_result(
                 payload=message[:200],
             )
             return
-        if score < 0.45:
+        if score < 0.35:
             log.debug(f"4-axis rejected (score={score:.2f}): {message[:60]}")
             db.insert_proactive_decision(
                 lane="reasoning",

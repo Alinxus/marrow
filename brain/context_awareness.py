@@ -468,4 +468,18 @@ def build_high_signal_context() -> str:
         for f in face_obs[:2]:
             lines.append(f"- {f['content'][:220]}")
 
+    # Recent decision/task/urgency cues from live context.
+    decision_obs = db.get_observations_by_type("decision_signal", limit=3)
+    task_obs = db.get_observations_by_type("task_signal", limit=3)
+    deadline_obs = db.get_observations_by_type("deadline_signal", limit=3)
+    if decision_obs or task_obs or deadline_obs:
+        if not lines:
+            lines.append("=== LONG-HORIZON CONTEXT ===")
+        for d in decision_obs[:2]:
+            lines.append(f"- Active decision point: {d['content'][:200]}")
+        for t in task_obs[:2]:
+            lines.append(f"- Active task pressure: {t['content'][:200]}")
+        for d in deadline_obs[:2]:
+            lines.append(f"- Active urgency cue: {d['content'][:200]}")
+
     return "\n".join(lines)

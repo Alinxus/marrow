@@ -19,6 +19,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import json
 import logging
 import platform
 import subprocess
@@ -229,6 +230,9 @@ _VISION_PROMPT = (
     "- Any visible text that matters: code, error messages, names, emails, chat messages, task lists\n"
     "- Any notifications, alerts, popups\n"
     "- If multiple windows: what's in focus vs background\n\n"
+    "Transcribe as much relevant visible text as possible, especially headings, errors, decisions, options, tasks, and names.\n"
+    "If this is code or technical output, include filenames, commands, stack traces, and failing lines when visible.\n"
+    "If this is writing, planning, or chat, include the concrete choices, requests, and unresolved questions.\n\n"
     "Be specific and dense. No filler phrases. Plain text."
 )
 
@@ -245,6 +249,74 @@ def _local_visual_summary(
         parts.append(f"Focus: {focused_context[:240]}")
     parts.append("Vision model unavailable; using local window metadata only.")
     return "\n".join(parts)
+
+
+def _extract_text_with_local_ocr(img: Image.Image) -> str:
+    if not getattr(config, "SCREEN_OCR_ENABLED", True):
+        return ""
+    try:
+        import pytesseract
+
+        gray = img.convert("L")
+        text = pytesseract.image_to_string(gray) or ""
+        compact = "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+        return compact[: int(getattr(config, "SCREEN_OCR_MAX_CHARS", 1800))]
+    except Exception:
+        return ""
+
+
+def _build_screen_payload(
+    app_name: str,
+    window_title: str,
+    focused_context: str,
+    fused_summary: str,
+    raw_ocr_text: str,
+    vision_text: str,
+) -> str:
+    payload = {
+        "metadata": {
+            "app_name": app_name or "",
+            "window_title": window_title or "",
+            "focused_context": focused_context or "",
+            "url": "",
+        },
+        "vision_summary": vision_text or "",
+        "ocr_raw_text": raw_ocr_text or "",
+        "fused_summary": fused_summary or "",
+    }
+    if focused_context and "[URL]" in focused_context:
+        try:
+            payload["metadata"]["url"] = focused_context.split("[URL]", 1)[1].strip()
+        except Exception:
+            pass
+    return json.dumps(payload)
+
+
+def _emit_perception_snapshot(
+    app_name: str,
+    window_title: str,
+    focused_context: str,
+    ocr_text: str,
+    raw_ocr_text: str = "",
+    vision_text: str = "",
+    *,
+    source: str,
+) -> None:
+    try:
+        from ui.bridge import get_bridge
+
+        payload = {
+            "app": app_name or "",
+            "title": window_title or "",
+            "focused_context": (focused_context or "")[:240],
+            "summary": (ocr_text or "")[:900],
+            "ocr_raw_text": (raw_ocr_text or "")[:900],
+            "vision_text": (vision_text or "")[:900],
+            "source": source,
+        }
+        get_bridge().perception_update.emit(json.dumps(payload))
+    except Exception:
+        pass
 
 
 async def _extract_text_with_vision(
@@ -368,6 +440,16 @@ async def screen_capture_loop() -> None:
                             window_title=window_title,
                             focused_context=focused_context,
                             ocr_text=keepalive_text,
+                            ocr_raw_text="",
+                            vision_text="",
+                            screen_payload_json=_build_screen_payload(
+                                app_name,
+                                window_title,
+                                focused_context,
+                                keepalive_text,
+                                "",
+                                "",
+                            ),
                             image_path="",
                             content_hash=content_hash,
                         )
@@ -403,7 +485,7 @@ async def screen_capture_loop() -> None:
                 )
 
                 if use_vision:
-                    ocr_text = await _extract_text_with_vision(
+                    vision_text = await _extract_text_with_vision(
                         b64,
                         app_name=app_name,
                         window_title=window_title,
@@ -411,9 +493,37 @@ async def screen_capture_loop() -> None:
                     )
                     _last_vision_ts = now
                 else:
-                    ocr_text = _local_visual_summary(
+                    vision_text = _local_visual_summary(
                         app_name, window_title, focused_context
                     )
+                raw_ocr_text = _extract_text_with_local_ocr(img)
+                fused_parts = []
+                if vision_text:
+                    fused_parts.append(f"Vision summary:\n{vision_text}")
+                if raw_ocr_text:
+                    fused_parts.append(f"Raw OCR:\n{raw_ocr_text}")
+                if not fused_parts:
+                    fused_parts.append(
+                        _local_visual_summary(app_name, window_title, focused_context)
+                    )
+                ocr_text = "\n\n".join(fused_parts)
+                screen_payload_json = _build_screen_payload(
+                    app_name,
+                    window_title,
+                    focused_context,
+                    ocr_text,
+                    raw_ocr_text,
+                    vision_text,
+                )
+                _emit_perception_snapshot(
+                    app_name,
+                    window_title,
+                    focused_context,
+                    ocr_text,
+                    raw_ocr_text=raw_ocr_text,
+                    vision_text=vision_text,
+                    source="vision" if use_vision else "local",
+                )
 
                 db.insert_screenshot(
                     ts=ts,
@@ -421,6 +531,9 @@ async def screen_capture_loop() -> None:
                     window_title=window_title,
                     focused_context=focused_context,
                     ocr_text=ocr_text,
+                    ocr_raw_text=raw_ocr_text,
+                    vision_text=vision_text,
+                    screen_payload_json=screen_payload_json,
                     image_path=image_path,
                     content_hash=content_hash,
                 )
@@ -437,6 +550,7 @@ async def screen_capture_loop() -> None:
                 # High-signal context extraction (contact pressure + claim events)
                 try:
                     from brain.context_awareness import process_screen_signals
+                    from brain.proactive import handle_live_screen_event
 
                     # Pull the most recent audio transcript to feed claim detection
                     recent_transcripts = db.get_recent_context(30).get(
@@ -453,6 +567,14 @@ async def screen_capture_loop() -> None:
                         ocr_text,
                         focused_context=focused_context,
                         transcript_text=recent_audio,
+                    )
+                    asyncio.create_task(
+                        handle_live_screen_event(
+                            app_name,
+                            window_title,
+                            focused_context=focused_context,
+                            ocr_text=ocr_text,
+                        )
                     )
                 except Exception as e:
                     log.debug(f"Signal extraction skipped: {e}")

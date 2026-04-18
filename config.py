@@ -40,11 +40,11 @@ OLLAMA_SCORING_MODEL = os.environ.get("OLLAMA_SCORING_MODEL", "llama3.2")
 OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "llava")
 
 # ─── Voice & Identity ─────────────────────────────────────────────────────────
-# Voice is optional - if empty, Marrow will run silently
+# Voice is optional - local/system TTS can still work without ElevenLabs.
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 MARROW_NAME = os.environ.get("MARROW_NAME", "Marrow")
 MARROW_VOICE_ID = os.environ.get("MARROW_VOICE_ID", "BAMYoBHLZM7lJgJAmFz0")
-VOICE_ENABLED = bool(ELEVENLABS_API_KEY)
+VOICE_ENABLED = os.environ.get("VOICE_ENABLED", "1") == "1"
 
 # ─── Intervals ────────────────────────────────────────────────────────────────
 REASONING_INTERVAL = int(os.environ.get("REASONING_INTERVAL", "25"))
@@ -71,6 +71,15 @@ RETAINDB_PROFILE_REFRESH_SECONDS = int(
 
 # Deepgram — if set, replaces Whisper with real-time streaming (much better)
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
+DEEPGRAM_MODEL = os.environ.get("DEEPGRAM_MODEL", "nova-3")
+DEEPGRAM_LANGUAGE = os.environ.get("DEEPGRAM_LANGUAGE", "en")
+DEEPGRAM_ENDPOINTING_MS = int(os.environ.get("DEEPGRAM_ENDPOINTING_MS", "180"))
+DEEPGRAM_UTTERANCE_END_MS = int(os.environ.get("DEEPGRAM_UTTERANCE_END_MS", "700"))
+DEEPGRAM_RECONNECT_BASE_SECONDS = float(
+    os.environ.get("DEEPGRAM_RECONNECT_BASE_SECONDS", "1.0")
+)
+DEEPGRAM_VAD_GATE_ENABLED = os.environ.get("DEEPGRAM_VAD_GATE_ENABLED", "1") != "0"
+DEEPGRAM_VAD_HANGOVER_MS = int(os.environ.get("DEEPGRAM_VAD_HANGOVER_MS", "650"))
 SILENCE_THRESHOLD = float(os.environ.get("SILENCE_THRESHOLD", "0.01"))
 
 # Actions
@@ -121,13 +130,15 @@ MEETING_APPS = [
 SCREENSHOT_SAVE_TO_DISK = os.environ.get("SCREENSHOT_SAVE_TO_DISK", "1") == "1"
 SCREEN_VISION_MAX_SIZE = int(os.environ.get("SCREEN_VISION_MAX_SIZE", "1920"))
 SCREEN_VISION_JPEG_QUALITY = int(os.environ.get("SCREEN_VISION_JPEG_QUALITY", "85"))
+SCREEN_OCR_ENABLED = os.environ.get("SCREEN_OCR_ENABLED", "1") == "1"
+SCREEN_OCR_MAX_CHARS = int(os.environ.get("SCREEN_OCR_MAX_CHARS", "1800"))
 
 # Token controls
 VISION_MAX_TOKENS = int(
-    os.environ.get("VISION_MAX_TOKENS", "320" if TOKEN_SAVER_MODE else "700")
+    os.environ.get("VISION_MAX_TOKENS", "420" if TOKEN_SAVER_MODE else "1200")
 )
 SCREEN_VISION_INTERVAL_SECONDS = int(
-    os.environ.get("SCREEN_VISION_INTERVAL_SECONDS", "12" if TOKEN_SAVER_MODE else "4")
+    os.environ.get("SCREEN_VISION_INTERVAL_SECONDS", "8" if TOKEN_SAVER_MODE else "2")
 )
 REASONING_MAX_TOKENS = int(
     os.environ.get("REASONING_MAX_TOKENS", "360" if TOKEN_SAVER_MODE else "600")
@@ -146,11 +157,11 @@ FOUR_AXIS_MAX_TOKENS = int(
 )
 REASONING_CONTEXT_CHAR_LIMIT = int(
     os.environ.get(
-        "REASONING_CONTEXT_CHAR_LIMIT", "3600" if TOKEN_SAVER_MODE else "7000"
+        "REASONING_CONTEXT_CHAR_LIMIT", "5200" if TOKEN_SAVER_MODE else "12000"
     )
 )
 GATE_CONTEXT_CHAR_LIMIT = int(
-    os.environ.get("GATE_CONTEXT_CHAR_LIMIT", "1400" if TOKEN_SAVER_MODE else "2200")
+    os.environ.get("GATE_CONTEXT_CHAR_LIMIT", "2200" if TOKEN_SAVER_MODE else "4000")
 )
 MEMORY_REFRESH_CYCLES = int(
     os.environ.get("MEMORY_REFRESH_CYCLES", "3" if TOKEN_SAVER_MODE else "1")
@@ -177,10 +188,16 @@ CONVERSATION_MODE_TIMEOUT_SECONDS = int(
     os.environ.get("CONVERSATION_MODE_TIMEOUT_SECONDS", "120")
 )
 CONVERSATION_MAX_TURNS = int(os.environ.get("CONVERSATION_MAX_TURNS", "20"))
-CONVERSATION_MAX_TOKENS = int(os.environ.get("CONVERSATION_MAX_TOKENS", "420"))
+CONVERSATION_MAX_TOKENS = int(os.environ.get("CONVERSATION_MAX_TOKENS", "320"))
 CONVERSATION_MODEL_TYPE = os.environ.get("CONVERSATION_MODEL_TYPE", "reasoning").lower()
+CONVERSATION_CONTEXT_CHAR_LIMIT = int(
+    os.environ.get("CONVERSATION_CONTEXT_CHAR_LIMIT", "1400")
+)
+CONVERSATION_FAST_PATH_ENABLED = (
+    os.environ.get("CONVERSATION_FAST_PATH_ENABLED", "1") != "0"
+)
 CONVERSATION_RESPONSE_STYLE = os.environ.get(
-    "CONVERSATION_RESPONSE_STYLE", "detailed"
+    "CONVERSATION_RESPONSE_STYLE", "balanced"
 ).lower()
 
 # Smart home (optional Home Assistant bridge)
@@ -189,7 +206,7 @@ HOME_ASSISTANT_TOKEN = os.environ.get("HOME_ASSISTANT_TOKEN", "")
 
 # Audio capture - set to false if no microphone
 AUDIO_ENABLED = os.environ.get("AUDIO_ENABLED", "1") == "1"
-AUDIO_ACTIVE_CHUNK_SECONDS = int(os.environ.get("AUDIO_ACTIVE_CHUNK_SECONDS", "2"))
+AUDIO_ACTIVE_CHUNK_SECONDS = int(os.environ.get("AUDIO_ACTIVE_CHUNK_SECONDS", "1"))
 AUDIO_MIN_TRANSCRIPT_CHARS = int(os.environ.get("AUDIO_MIN_TRANSCRIPT_CHARS", "3"))
 
 # Mission mode / orchestration
@@ -233,9 +250,15 @@ PROACTIVE_STARTUP_DELAY_SECONDS = int(
 PROACTIVE_BACKOFF_MAX_SECONDS = int(
     os.environ.get("PROACTIVE_BACKOFF_MAX_SECONDS", "300")
 )
+PROACTIVE_AMBIENT_PULSE_ENABLED = (
+    os.environ.get("PROACTIVE_AMBIENT_PULSE_ENABLED", "0") == "1"
+)
+PROACTIVE_PRESENCE_PING_ENABLED = (
+    os.environ.get("PROACTIVE_PRESENCE_PING_ENABLED", "0") == "1"
+)
 
 # Mentor-style buffered proactive lane (ported pattern from Omi)
-MENTOR_PROACTIVE_ENABLED = os.environ.get("MENTOR_PROACTIVE_ENABLED", "1") == "1"
+MENTOR_PROACTIVE_ENABLED = os.environ.get("MENTOR_PROACTIVE_ENABLED", "0") == "1"
 MENTOR_CONTEXT_WINDOW_SECONDS = int(
     os.environ.get("MENTOR_CONTEXT_WINDOW_SECONDS", "240")
 )

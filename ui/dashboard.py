@@ -536,8 +536,11 @@ class WatchingSection(QWidget):
         self._app = _lbl("—", TEXT_PRI, 10, bold=True)
         self._title = _lbl("", TEXT_SEC, 9)
         self._title.setWordWrap(True)
+        self._summary = _lbl("", TEXT_DIM, 8)
+        self._summary.setWordWrap(True)
         lay.addWidget(self._app)
         lay.addWidget(self._title)
+        lay.addWidget(self._summary)
 
     def update_focus(self, app: str, title: str):
         self._app.setText(app or "—")
@@ -549,6 +552,24 @@ class WatchingSection(QWidget):
         if app and title:
             return f"{app} · {title[:44]}"
         return app or title
+
+    def update_snapshot(self, payload_json: str):
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return
+        summary = (payload.get("summary") or "").strip()
+        focused = (payload.get("focused_context") or "").strip()
+        source = (payload.get("source") or "").strip()
+        parts = []
+        if focused:
+            parts.append(focused[:90])
+        if summary:
+            compact = " ".join(summary.split())
+            parts.append(compact[:160])
+        if source:
+            parts.append(f"source: {source}")
+        self._summary.setText(" · ".join(parts[:3]))
 
 
 class MessageSection(QWidget):
@@ -764,6 +785,7 @@ class MarrowDashboard(QWidget):
             b = get_bridge()
             b.state_changed.connect(self._on_state)
             b.focus_changed.connect(self._watching.update_focus)
+            b.perception_update.connect(self._watching.update_snapshot)
             b.message_spoken.connect(self._on_marrow_spoke)
             b.stats_updated.connect(self._stats.update_stats)
             b.mic_active.connect(self._on_mic_active)

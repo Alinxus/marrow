@@ -134,6 +134,8 @@ _state = {
     "last_ambient_pulse_ts": 0.0,
     "last_presence_ping_ts": 0.0,
     "last_kind_emit_ts": {},  # kind -> ts
+    "last_live_event_key": "",
+    "last_live_event_ts": 0.0,
     "health_state": "active",  # active|degraded|recovering
     "consecutive_errors": 0,
 }
@@ -331,10 +333,15 @@ def _in_flow_now() -> bool:
 
 def _user_actively_speaking() -> bool:
     try:
-        ctx = db.get_recent_context(12)
+        ctx = db.get_recent_context(4)
         transcripts = ctx.get("transcripts", [])
         chars = sum(len((t.get("text") or "").strip()) for t in transcripts)
-        return chars >= 30
+        newest_ts = max((float(t.get("ts") or 0.0) for t in transcripts), default=0.0)
+        if chars < 45:
+            return False
+        if newest_ts and (time.time() - newest_ts) > 4.5:
+            return False
+        return True
     except Exception:
         return False
 
@@ -447,6 +454,190 @@ def _build_live_guidance(app: str, title: str, ocr_text: str = "") -> str:
         )
 
     return "I'm live with full context. Give me your immediate objective and I'll drive the next step now."
+
+
+def _contains_strong_error_signal(app_name: str, combined: str) -> bool:
+    app_l = (app_name or "").lower()
+    dev_app = any(
+        x in app_l for x in ("code", "cursor", "pycharm", "intellij", "terminal", "powershell")
+    )
+    strong_patterns = (
+        "traceback",
+        "exception:",
+        "syntaxerror",
+        "typeerror",
+        "module not found",
+        "build failed",
+        "test failed",
+        "compilation failed",
+        "command failed",
+        "npm err!",
+        "pytest",
+        "failed with exit code",
+    )
+    if any(token in combined for token in strong_patterns):
+        return True
+    if dev_app and "error:" in combined:
+        return True
+    return False
+
+
+def _contains_strong_task_signal(combined: str) -> bool:
+    task_hits = sum(
+        1
+        for token in (
+            "todo",
+            "action item",
+            "next step",
+            "follow up",
+            "follow-up",
+            "reply by",
+            "needs response",
+            "assign to",
+        )
+        if token in combined
+    )
+    return task_hits >= 2
+
+
+def _contains_strong_decision_signal(combined: str) -> bool:
+    decision_hits = sum(
+        1
+        for token in (
+            "should we",
+            "should i",
+            "what do you think",
+            "which one",
+            "pick one",
+            "trade-off",
+            "tradeoff",
+            "option a",
+            "option b",
+            "pros and cons",
+            "decide",
+            "decision",
+        )
+        if token in combined
+    )
+    return decision_hits >= 1
+
+
+async def _generate_grounded_advice(
+    app_name: str,
+    window_title: str,
+    focused_context: str,
+    ocr_text: str,
+) -> tuple[str, int] | None:
+    """Small advisory lane for decision/help moments that deserve an opinion, not just detection."""
+    from brain.llm import get_client
+
+    llm = get_client()
+    if llm.provider == "none":
+        return None
+
+    prompt = f"""You are Marrow, a proactive laptop companion with good judgment.
+
+Current app: {app_name}
+Window title: {window_title}
+Focused context: {focused_context[:220]}
+Screen summary: {ocr_text[:700]}
+
+Write one short grounded proactive message only if this is a real decision, ambiguity, trade-off, next-step, or stalled-momentum moment.
+Have a real opinion when warranted. Sound like a sharp friend helping in real time.
+Do not narrate the screen. Do not ask generic questions. Do not mention AI or observations.
+
+Return strict JSON only:
+{{"speak": true|false, "message": "one or two sentences", "urgency": 2|3|4}}
+"""
+    try:
+        response = await llm.create(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
+            model_type="scoring",
+        )
+        raw = (response.text or "").strip()
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            return None
+        data = json.loads(raw[start:end])
+        if not bool(data.get("speak")):
+            return None
+        message = (data.get("message") or "").strip()
+        if not message:
+            return None
+        urgency = max(2, min(4, int(data.get("urgency", 3))))
+        return message, urgency
+    except Exception as e:
+        log.debug(f"Grounded advice generation failed: {e}")
+        return None
+
+
+async def handle_live_screen_event(
+    app_name: str,
+    window_title: str,
+    focused_context: str = "",
+    ocr_text: str = "",
+) -> None:
+    """Grounded proactive lane driven by fresh screen changes, not timer heartbeats."""
+    app = (app_name or "").strip()
+    title = (window_title or "").strip()
+    focused = (focused_context or "").strip()
+    ocr = (ocr_text or "").strip()
+    combined = "\n".join(x for x in [title, focused, ocr] if x).lower()
+
+    if not combined:
+        return
+    if _in_meeting_now() or _user_actively_speaking():
+        return
+
+    msg = ""
+    urgency = 3
+    kind = "live_screen"
+
+    if _contains_strong_error_signal(app, combined):
+        target = focused or title or app or "the current screen"
+        msg = f"That looks like a real failure in {target[:90]}. I'd fix that before doing anything else."
+        urgency = 4
+        kind = "live_error"
+    elif any(
+        token in combined
+        for token in ("deadline", "due today", "due tomorrow", "urgent", "asap", "eod")
+    ):
+        target = title or app or "what you're looking at"
+        msg = f"{target[:90]} has real urgency on it. Best move is to turn it into one concrete next action right now."
+        urgency = 4
+        kind = "live_deadline"
+    elif _contains_strong_task_signal(combined):
+        target = title or app or "this view"
+        msg = f"The next movable thing is in {target[:90]}. I'd do that now instead of leaving it hanging."
+        urgency = 3
+        kind = "live_task"
+    elif _contains_strong_decision_signal(combined):
+        target = title or app or "this screen"
+        msg = f"You're at a real choice in {target[:90]}. My bias is toward the more reversible option unless the upside of the heavier path is obvious."
+        urgency = 3
+        kind = "live_decision"
+
+    if not msg:
+        advice = await _generate_grounded_advice(app, title, focused, ocr)
+        if advice:
+            msg, urgency = advice
+            kind = "live_advice"
+        else:
+            return
+
+    event_key = f"{kind}:{app.lower()}:{title[:80].lower()}:{focused[:80].lower()}"
+    now = time.time()
+    if (
+        event_key == _state.get("last_live_event_key")
+        and (now - float(_state.get("last_live_event_ts", 0.0))) < 180
+    ):
+        return
+
+    _state["last_live_event_key"] = event_key
+    _state["last_live_event_ts"] = now
+    await _surface_signal(msg, urgency=urgency, kind=kind)
 
 
 async def emit_live_kickoff() -> None:
@@ -883,6 +1074,8 @@ def get_proactive_context() -> str:
 
 async def _check_ambient_pulse() -> None:
     """Periodic lightweight spoken check-in to avoid silent behavior."""
+    if not getattr(config, "PROACTIVE_AMBIENT_PULSE_ENABLED", False):
+        return
     now = time.time()
     if now - float(_state["last_ambient_pulse_ts"]) < AMBIENT_PULSE_SECONDS:
         return
@@ -927,6 +1120,8 @@ async def _check_ambient_pulse() -> None:
 
 async def _check_presence_ping() -> None:
     """Deterministic non-LLM presence ping if Marrow has been too quiet."""
+    if not getattr(config, "PROACTIVE_PRESENCE_PING_ENABLED", False):
+        return
     now = time.time()
     if now - float(_state["last_presence_ping_ts"]) < PRESENCE_PING_SECONDS:
         return
@@ -1017,9 +1212,12 @@ async def proactive_loop() -> None:
             await _check_distraction()
             await _check_calendar()
             await _check_end_of_day()
-            await _check_ambient_pulse()
-            await _check_presence_ping()
-            await _check_mentor_proactive()
+            if getattr(config, "PROACTIVE_AMBIENT_PULSE_ENABLED", False):
+                await _check_ambient_pulse()
+            if getattr(config, "PROACTIVE_PRESENCE_PING_ENABLED", False):
+                await _check_presence_ping()
+            if getattr(config, "MENTOR_PROACTIVE_ENABLED", False):
+                await _check_mentor_proactive()
             _state["consecutive_errors"] = 0
             if _state["health_state"] != "active":
                 _state["health_state"] = "recovering"

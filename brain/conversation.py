@@ -165,6 +165,66 @@ def _style_instruction() -> str:
     return "Keep it natural and concise, usually 1-3 sentences, with specifics over generic filler."
 
 
+def _should_use_reasoning_model(user_text: str, context_hint: str) -> bool:
+    low = (user_text or "").lower().strip()
+    if not low:
+        return True
+    decision_markers = (
+        "should i",
+        "should we",
+        "what do you think",
+        "which one",
+        "which should",
+        "pick one",
+        "what would you do",
+        "opinion",
+        "trade-off",
+        "tradeoff",
+        "decide",
+        "decision",
+        "next step",
+        "stuck",
+        "why am i",
+        "why is this",
+        "how should",
+    )
+    if any(marker in low for marker in decision_markers):
+        return True
+    if len((context_hint or "").strip()) > 500:
+        return True
+    return False
+
+
+def _should_use_scoring_fast_path(user_text: str, context_hint: str) -> bool:
+    if not getattr(config, "CONVERSATION_FAST_PATH_ENABLED", True):
+        return False
+    low = (user_text or "").lower().strip()
+    if not low:
+        return False
+    simple_starts = (
+        "hi",
+        "hello",
+        "hey",
+        "you there",
+        "what's up",
+        "whats up",
+        "what do you see",
+        "what are you seeing",
+        "what am i on",
+        "what tab is this",
+        "what file is this",
+        "okay",
+        "ok",
+        "yes",
+        "no",
+    )
+    if any(low.startswith(marker) for marker in simple_starts):
+        return True
+    if len(low.split()) <= 10 and not _should_use_reasoning_model(user_text, context_hint):
+        return len((context_hint or "").strip()) <= 900
+    return False
+
+
 def _detemplatize_reply(text: str) -> str:
     out = (text or "").strip()
     if not out:
@@ -228,6 +288,7 @@ async def handle_turn(user_text: str, context_hint: str = "") -> str:
             "Do not claim Marrow is turn-based only or observe-on-demand only; default runtime is continuous.",
             "Sound like a sharp human operator: contractions are fine, avoid corporate phrasing.",
             "Avoid repetitive sentence starters; vary cadence naturally.",
+            "If the user is deciding, stuck, or comparing options, have a grounded opinion.",
             "No internal jargon.",
         ]
     )
@@ -239,21 +300,28 @@ async def handle_turn(user_text: str, context_hint: str = "") -> str:
             msgs.append(
                 {
                     "role": "user",
-                    "content": f"[Current context]\n{context_hint[:550]}\n\nUser: {user_text}",
+                    "content": f"[Current context]\n{context_hint[:config.CONVERSATION_CONTEXT_CHAR_LIMIT]}\n\nUser: {user_text}",
                 }
             )
         else:
             msgs.append({"role": "user", "content": user_text})
 
+        if _should_use_reasoning_model(user_text, context_hint):
+            model_type = "reasoning"
+        elif _should_use_scoring_fast_path(user_text, context_hint):
+            model_type = "scoring"
+        else:
+            model_type = (
+                config.CONVERSATION_MODEL_TYPE
+                if config.CONVERSATION_MODEL_TYPE in ("reasoning", "scoring")
+                else "reasoning"
+            )
+
         response = await llm.create(
             messages=msgs,
             system=system,
             max_tokens=config.CONVERSATION_MAX_TOKENS,
-            model_type=(
-                config.CONVERSATION_MODEL_TYPE
-                if config.CONVERSATION_MODEL_TYPE in ("reasoning", "scoring")
-                else "reasoning"
-            ),
+            model_type=model_type,
         )
         text = (response.text or "").strip()
         text = _detemplatize_reply(text)

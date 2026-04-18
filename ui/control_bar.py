@@ -221,6 +221,11 @@ class MarrowControlBar(QWidget):
         self._mission_lbl.setVisible(False)
         body_l.addWidget(self._mission_lbl)
 
+        self._perception_lbl = _lbl("", QColor(70, 70, 98), 8)
+        self._perception_lbl.setWordWrap(True)
+        self._perception_lbl.setVisible(False)
+        body_l.addWidget(self._perception_lbl)
+
         self._agent_lbl = _lbl("", QColor(88, 80, 40), 8)
         self._agent_lbl.setWordWrap(True)
         self._agent_lbl.setVisible(False)
@@ -246,10 +251,12 @@ class MarrowControlBar(QWidget):
             b.focus_changed.connect(self._on_focus)
             b.mic_active.connect(self._mic.set_active)
             b.message_spoken.connect(self._on_message_spoken)
+            b.transcript_heard.connect(self._on_transcript_heard)
             b.task_response.connect(self._on_task_response)
             b.mission_update.connect(self._on_mission_update)
             b.agent_update.connect(self._on_agent_update)
             b.audio_debug.connect(self._on_audio_debug)
+            b.perception_update.connect(self._on_perception_update)
         except Exception as e:
             log.warning(f"Control bar bridge failed: {e}")
 
@@ -350,6 +357,31 @@ class MarrowControlBar(QWidget):
     def _on_audio_debug(self, message: str):
         self._audio_lbl.setText(message[:120])
         self._audio_lbl.setVisible(True)
+
+    def _on_transcript_heard(self, text: str):
+        heard = f'heard: "{text[:80]}"'
+        self._audio_lbl.setText(heard)
+        self._audio_lbl.setVisible(True)
+
+    def _on_perception_update(self, payload_json: str):
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return
+        focused = (payload.get("focused_context") or "").strip()
+        summary = " ".join(((payload.get("summary") or "").split()))
+        source = payload.get("source") or ""
+        parts = []
+        if focused:
+            parts.append(focused[:80])
+        if summary:
+            parts.append(summary[:140])
+        if source:
+            parts.append(source)
+        text = " · ".join(parts[:3])
+        if text:
+            self._perception_lbl.setText(text)
+            self._perception_lbl.setVisible(True)
 
     def _ask(self):
         try:

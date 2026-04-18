@@ -70,6 +70,9 @@ def _setup_logging() -> None:
             logging.FileHandler(log_dir / "marrow.log", encoding="utf-8"),
         ],
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("openai._base_client").setLevel(logging.WARNING)
 
 
 log = logging.getLogger("marrow")
@@ -169,16 +172,21 @@ def _enforce_default_behavior_profile() -> None:
     """Make talkative proactive + conversation mode the startup default."""
     desired = {
         "CONVERSATION_ENABLED": "1",
-        "CONVERSATION_RESPONSE_STYLE": "detailed",
+        "CONVERSATION_RESPONSE_STYLE": "balanced",
         "CONVERSATION_MODEL_TYPE": "reasoning",
         "CONVERSATION_MODE_TIMEOUT_SECONDS": "120",
         "CONVERSATION_MAX_TURNS": "20",
-        "CONVERSATION_MAX_TOKENS": "420",
+        "CONVERSATION_MAX_TOKENS": "320",
+        "CONVERSATION_CONTEXT_CHAR_LIMIT": "1400",
+        "AUDIO_ACTIVE_CHUNK_SECONDS": "1",
         "PROACTIVE_FREQUENCY": "4",
         "PROACTIVE_SPEECH_MIN_URGENCY": "2",
         "PROACTIVE_AUTO_SPEAK_MIN_URGENCY": "2",
-        "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "30",
+        "PROACTIVE_SPEECH_MIN_GAP_SECONDS": "20",
         "PROACTIVE_SIGNAL_DEDUP_SECONDS": "180",
+        "PROACTIVE_AMBIENT_PULSE_ENABLED": "0",
+        "PROACTIVE_PRESENCE_PING_ENABLED": "0",
+        "MENTOR_PROACTIVE_ENABLED": "0",
     }
     pending = {
         k: v for k, v in desired.items() if str(os.environ.get(k, "")).strip() != v
@@ -779,7 +787,7 @@ async def _main_async() -> None:
 
         from brain import conversation
         from actions.executor import execute_action
-        from voice.speak import speak
+        from voice.speak import speak, speak_filler
 
         _emit("state_changed", "thinking")
         try:
@@ -795,6 +803,11 @@ async def _main_async() -> None:
 
             hint = f"{runtime_facts}\n\n{hint}" if hint else runtime_facts
             if _looks_like_action_request(user_text):
+                _emit("state_changed", "acting")
+                try:
+                    await speak_filler()
+                except Exception:
+                    pass
                 action_result = await execute_action(user_text, context=hint)
                 reply = _compose_action_result_reply(action_result)
             else:
@@ -957,7 +970,11 @@ async def _main_async() -> None:
         log.info(f"  Provider  : {config.LLM_PROVIDER}")
         log.info("  Reasoning : unknown")
     log.info(f"  Whisper   : {config.WHISPER_MODEL}")
-    log.info(f"  Voice     : {'ElevenLabs' if config.VOICE_ENABLED else 'SAPI/off'}")
+    if config.VOICE_ENABLED:
+        voice_mode = "ElevenLabs" if config.ELEVENLABS_API_KEY else "local/system TTS"
+    else:
+        voice_mode = "off"
+    log.info(f"  Voice     : {voice_mode}")
     log.info(
         f"  Hotkey    : {config.ON_DEMAND_HOTKEY if config.HOTKEY_ENABLED else 'off'}"
     )

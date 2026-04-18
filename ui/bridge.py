@@ -94,6 +94,9 @@ class MarrowBridge(QObject):
     # Audio diagnostics / live status
     audio_debug = pyqtSignal(str)
 
+    # Rich screen/perception snapshot payload: JSON string
+    perception_update = pyqtSignal(str)
+
     # ── UI → Backend signals ──────────────────────────────────────────────
     # User pressed "Ask Marrow" button — triggers on-demand activation
     ask_requested = pyqtSignal()

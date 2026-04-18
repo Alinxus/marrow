@@ -38,6 +38,7 @@ def _connect() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
+        conn.execute("PRAGMA busy_timeout=5000")
         _local.conn = conn
     return _local.conn
 
@@ -52,6 +53,9 @@ def init_db() -> None:
             window_title     TEXT,
             focused_context  TEXT,
             ocr_text         TEXT,
+            ocr_raw_text     TEXT,
+            vision_text      TEXT,
+            screen_payload_json TEXT,
             image_path       TEXT,
             content_hash     TEXT    -- dedup: skip unchanged screens
         );
@@ -230,6 +234,18 @@ def init_db() -> None:
 
     # Backward-compatible column add for existing DBs.
     try:
+        cols = conn.execute("PRAGMA table_info(screenshots)").fetchall()
+        col_names = {c[1] for c in cols}
+        if "ocr_raw_text" not in col_names:
+            conn.execute("ALTER TABLE screenshots ADD COLUMN ocr_raw_text TEXT")
+        if "vision_text" not in col_names:
+            conn.execute("ALTER TABLE screenshots ADD COLUMN vision_text TEXT")
+        if "screen_payload_json" not in col_names:
+            conn.execute("ALTER TABLE screenshots ADD COLUMN screen_payload_json TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    try:
         cols = conn.execute("PRAGMA table_info(proactive_decisions)").fetchall()
         col_names = {c[1] for c in cols}
         if "latency_ms" not in col_names:
@@ -249,20 +265,26 @@ def insert_screenshot(
     window_title: str,
     focused_context: str,
     ocr_text: str,
+    ocr_raw_text: str = "",
+    vision_text: str = "",
+    screen_payload_json: str = "",
     image_path: str = "",
     content_hash: str = "",
 ) -> None:
     conn = _connect()
     conn.execute(
         """INSERT INTO screenshots
-           (ts, app_name, window_title, focused_context, ocr_text, image_path, content_hash)
-           VALUES (?,?,?,?,?,?,?)""",
+           (ts, app_name, window_title, focused_context, ocr_text, ocr_raw_text, vision_text, screen_payload_json, image_path, content_hash)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (
             ts,
             app_name,
             window_title,
             focused_context,
             ocr_text,
+            ocr_raw_text,
+            vision_text,
+            screen_payload_json,
             image_path,
             content_hash,
         ),
@@ -339,7 +361,7 @@ def get_recent_context(window_seconds: int) -> dict:
     cutoff = (datetime.utcnow() - timedelta(seconds=window_seconds)).timestamp()
 
     screenshots = conn.execute(
-        """SELECT ts, app_name, window_title, focused_context, ocr_text
+        """SELECT ts, app_name, window_title, focused_context, ocr_text, ocr_raw_text, vision_text, screen_payload_json
            FROM screenshots WHERE ts > ? ORDER BY ts DESC LIMIT 20""",
         (cutoff,),
     ).fetchall()
@@ -360,7 +382,7 @@ def get_recent_screenshots(window_seconds: int, limit: int = 1200) -> list:
     conn = _connect()
     cutoff = (datetime.utcnow() - timedelta(seconds=window_seconds)).timestamp()
     rows = conn.execute(
-        """SELECT ts, app_name, window_title, focused_context, ocr_text, content_hash
+        """SELECT ts, app_name, window_title, focused_context, ocr_text, ocr_raw_text, vision_text, screen_payload_json, content_hash
            FROM screenshots
            WHERE ts > ?
            ORDER BY ts DESC

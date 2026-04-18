@@ -75,6 +75,11 @@ def _is_silent(audio: np.ndarray) -> bool:
     return rms < _adaptive_threshold()
 
 
+def _float_audio_to_pcm16_bytes(audio: np.ndarray) -> bytes:
+    clipped = np.clip(audio.astype(np.float32), -1.0, 1.0)
+    return (clipped * 32767.0).astype(np.int16).tobytes()
+
+
 def _check_wake_word(text: str) -> bool:
     """Check if transcribed text contains wake word."""
     if not text:
@@ -144,6 +149,9 @@ class AudioCaptureService:
     def __init__(self):
         self._audio_backend_error = ""
         self._unavailable_notified = False
+        self._last_transcript_text = ""
+        self._last_transcript_ts = 0.0
+        self._speech_gate_until = 0.0
         if not config.AUDIO_ENABLED:
             self._deepgram_key = ""
             self._model = None
@@ -374,6 +382,15 @@ class AudioCaptureService:
         ):
             return
         ts = time.time()
+        normalized = " ".join(text.lower().split())
+        if (
+            normalized
+            and normalized == self._last_transcript_text
+            and (ts - float(self._last_transcript_ts)) < 2.5
+        ):
+            return
+        self._last_transcript_text = normalized
+        self._last_transcript_ts = ts
         from storage import db as _db
 
         _db.insert_transcript(ts, text)
@@ -452,10 +469,9 @@ class AudioCaptureService:
                 DeepgramClient,
                 LiveTranscriptionEvents,
                 LiveOptions,
-                Microphone,
             )
         except ImportError:
-            log.warning("deepgram-sdk not installed — falling back to Whisper")
+            log.warning("deepgram-sdk not installed - falling back to Whisper")
             await self._loop.run_in_executor(None, self._record_loop)
             return
 
@@ -469,16 +485,43 @@ class AudioCaptureService:
         log.info("Deepgram streaming started")
         _emit_audio_status("deepgram streaming started")
         dg = DeepgramClient(self._deepgram_key)
+        reconnect_delay = max(
+            0.5, float(getattr(config, "DEEPGRAM_RECONNECT_BASE_SECONDS", 1.0))
+        )
+        selected_device = _select_input_device()
+        gate_enabled = bool(getattr(config, "DEEPGRAM_VAD_GATE_ENABLED", True))
+        hangover_seconds = max(
+            0.15, int(getattr(config, "DEEPGRAM_VAD_HANGOVER_MS", 650)) / 1000.0
+        )
 
         while self._running:
+            audio_q: queue.Queue = queue.Queue(maxsize=256)
+            stream = None
+            conn = None
+            partial_text = {"value": ""}
             try:
                 conn = dg.listen.live.v("1")
+                last_partial_emit = {"text": "", "ts": 0.0}
 
                 def on_message(self_dg, result, **kwargs):
                     try:
                         sentence = result.channel.alternatives[0].transcript
-                        if sentence and result.is_final:
+                        if not sentence:
+                            return
+                        partial_text["value"] = sentence
+                        now = time.time()
+                        normalized = " ".join(sentence.lower().split())
+                        if (
+                            normalized
+                            and normalized != last_partial_emit["text"]
+                            and (now - float(last_partial_emit["ts"])) > 0.35
+                        ):
+                            last_partial_emit["text"] = normalized
+                            last_partial_emit["ts"] = now
+                            _emit_audio_status(f"hearing: {sentence[:80]}")
+                        if result.is_final or getattr(result, "speech_final", False):
                             self._on_transcript(sentence)
+                            partial_text["value"] = ""
                     except Exception:
                         pass
 
@@ -490,32 +533,98 @@ class AudioCaptureService:
                 conn.on(LiveTranscriptionEvents.Error, on_error)
 
                 options = LiveOptions(
-                    model="nova-2",
-                    language="en",
+                    model=getattr(config, "DEEPGRAM_MODEL", "nova-3"),
+                    language=getattr(config, "DEEPGRAM_LANGUAGE", "en"),
                     smart_format=True,
                     vad_events=True,
-                    endpointing=300,
-                    interim_results=False,
+                    endpointing=int(getattr(config, "DEEPGRAM_ENDPOINTING_MS", 180)),
+                    utterance_end_ms=str(
+                        int(getattr(config, "DEEPGRAM_UTTERANCE_END_MS", 700))
+                    ),
+                    interim_results=True,
                 )
 
                 if not conn.start(options):
-                    log.error("Deepgram connection failed — falling back to Whisper")
-                    await self._loop.run_in_executor(None, self._record_loop)
-                    return
+                    log.error("Deepgram connection failed - retrying")
+                    _emit_audio_status("deepgram connect failed")
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 1.8, 8.0)
+                    continue
 
-                mic = Microphone(conn.send)
-                mic.start()
+                def stream_callback(indata, frames, time_info, status):
+                    if status:
+                        log.warning(f"Deepgram audio status: {status}")
+                    try:
+                        audio_q.put_nowait(indata.copy())
+                    except queue.Full:
+                        try:
+                            audio_q.get_nowait()
+                        except Exception:
+                            pass
+                        try:
+                            audio_q.put_nowait(indata.copy())
+                        except Exception:
+                            pass
+
+                stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=1,
+                    dtype="float32",
+                    callback=stream_callback,
+                    blocksize=512,
+                    device=selected_device,
+                )
+                stream.start()
+                reconnect_delay = max(
+                    0.5, float(getattr(config, "DEEPGRAM_RECONNECT_BASE_SECONDS", 1.0))
+                )
+                _emit_audio_status("deepgram live with speech gate")
 
                 while self._running:
-                    await asyncio.sleep(1)
+                    try:
+                        chunk = await asyncio.to_thread(audio_q.get, True, 1.0)
+                    except queue.Empty:
+                        continue
 
-                mic.finish()
-                conn.finish()
+                    audio = np.asarray(chunk, dtype=np.float32).flatten()
+                    if audio.size == 0:
+                        continue
+
+                    now = time.time()
+                    if gate_enabled:
+                        if not _is_silent(audio):
+                            self._speech_gate_until = now + hangover_seconds
+                            _emit_audio_status("speech detected")
+                        elif now > self._speech_gate_until:
+                            continue
+
+                    conn.send(_float_audio_to_pcm16_bytes(audio))
 
             except Exception as e:
-                log.error(f"Deepgram stream error: {e} — reconnecting in 5s")
+                if partial_text.get("value"):
+                    try:
+                        self._on_transcript(partial_text["value"])
+                    except Exception:
+                        pass
+                    partial_text["value"] = ""
+                log.error(
+                    f"Deepgram stream error: {e} - reconnecting in {reconnect_delay:.1f}s"
+                )
                 _emit_audio_status("deepgram reconnecting")
-                await asyncio.sleep(5)
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.8, 8.0)
+            finally:
+                try:
+                    if stream is not None:
+                        stream.stop()
+                        stream.close()
+                except Exception:
+                    pass
+                try:
+                    if conn is not None:
+                        conn.finish()
+                except Exception:
+                    pass
 
     def set_loop(self, loop) -> None:
         """Must be called from main before run() so threads can schedule callbacks."""

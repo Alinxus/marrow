@@ -167,17 +167,23 @@ def _in_flow_state() -> bool:
     return has_flow_app and not has_meeting
 
 
-def _user_is_actively_speaking(window_seconds: int = 12) -> bool:
-    """Heuristic: if we captured substantial transcript very recently, user is speaking."""
+def _user_is_actively_speaking(window_seconds: int = 4) -> bool:
+    """Heuristic: only treat the user as actively speaking for a very recent, substantial transcript burst."""
     try:
         ctx = db.get_recent_context(window_seconds)
         transcripts = ctx.get("transcripts", [])
         total_chars = 0
+        newest_ts = 0.0
         for row in transcripts:
             text = (row.get("text") or "").strip()
             if text:
                 total_chars += len(text)
-        return total_chars >= 30
+                newest_ts = max(newest_ts, float(row.get("ts") or 0.0))
+        if total_chars < 45:
+            return False
+        if newest_ts and (time.time() - newest_ts) > 4.5:
+            return False
+        return True
     except Exception:
         return False
 
