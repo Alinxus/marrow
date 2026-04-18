@@ -79,6 +79,8 @@ class MarrowOrb(QWidget):
         self._glow     = 0.5        # 0–1
         self._drag_pos: Optional[QPoint] = None
         self._dragged  = False
+        self._trace_lines: list[str] = []
+        self._focus_hint = ""
 
         self._anim = QTimer(self)
         self._anim.setInterval(33)  # ~30fps
@@ -103,6 +105,32 @@ class MarrowOrb(QWidget):
         if state != self._state:
             self._state = state
             self._t = 0.0
+            self._refresh_tooltip()
+
+    def set_audio_trace(self, message: str):
+        msg = (message or "").strip()
+        if not msg:
+            return
+        if self._trace_lines and self._trace_lines[-1] == msg:
+            return
+        self._trace_lines.append(msg[:120])
+        self._trace_lines = self._trace_lines[-4:]
+        self._refresh_tooltip()
+
+    def set_focus_hint(self, app_name: str, window_title: str):
+        app_name = (app_name or "").strip()
+        window_title = (window_title or "").strip()
+        self._focus_hint = " - ".join([p for p in (app_name, window_title[:60]) if p])
+        self._refresh_tooltip()
+
+    def _refresh_tooltip(self):
+        lines = [f"Marrow: {self._state}"]
+        if self._focus_hint:
+            lines.append(f"Focus: {self._focus_hint}")
+        if self._trace_lines:
+            lines.append("Trace:")
+            lines.extend(self._trace_lines[-3:])
+        self.setToolTip("\n".join(lines))
 
     # ── Paint ─────────────────────────────────────────────────────────────
 
@@ -219,5 +247,10 @@ class MarrowOrb(QWidget):
             from ui.bridge import get_bridge
             bridge = get_bridge()
             bridge.state_changed.connect(self.set_state)
+            bridge.audio_debug.connect(self.set_audio_trace)
+            bridge.transcript_heard.connect(
+                lambda text: self.set_audio_trace(f"heard: {text[:80]}")
+            )
+            bridge.focus_changed.connect(self.set_focus_hint)
         except Exception as e:
             log.warning(f"Orb bridge connect failed: {e}")

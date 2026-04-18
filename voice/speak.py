@@ -30,7 +30,13 @@ from typing import Optional
 
 import httpx
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except Exception as exc:
+    sd = None
+    _SOUNDDEVICE_IMPORT_ERROR = str(exc)
+else:
+    _SOUNDDEVICE_IMPORT_ERROR = ""
 
 import config
 
@@ -79,6 +85,9 @@ async def speak(text: str) -> None:
         _cancel_event.clear()
         text = _prepare_tts_text(text)
         if not text:
+            return
+        if sd is None:
+            await _speak_system(text)
             return
         if config.DEEPGRAM_API_KEY and config.DEEPGRAM_TTS_ENABLED:
             try:
@@ -155,6 +164,8 @@ def _prepare_tts_text(text: str) -> str:
 def _play_deepgram_audio_bytes(
     audio_bytes: bytes, sample_rate_hint: int = 24000
 ) -> None:
+    if sd is None:
+        raise RuntimeError(_SOUNDDEVICE_IMPORT_ERROR or "sounddevice unavailable")
     if not audio_bytes:
         return
     if _cancel_event.is_set():
@@ -274,6 +285,8 @@ def _play_pcm_from_queue(chunk_q: queue.Queue, sample_rate: int = 16000) -> None
     Starts playing immediately when first chunk arrives (true streaming).
     """
     try:
+        if sd is None:
+            raise RuntimeError(_SOUNDDEVICE_IMPORT_ERROR or "sounddevice unavailable")
         with sd.RawOutputStream(
             samplerate=sample_rate,
             channels=1,
@@ -389,6 +402,8 @@ def _play_numpy_from_queue(chunk_q: queue.Queue) -> None:
     """
     stream = None
     try:
+        if sd is None:
+            raise RuntimeError(_SOUNDDEVICE_IMPORT_ERROR or "sounddevice unavailable")
         # Drain the queue: first item determines stream params
         while True:
             if _cancel_event.is_set():

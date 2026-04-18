@@ -80,11 +80,15 @@ log = logging.getLogger("marrow")
 _RUNTIME_HANDOFF_ENV = "MARROW_RUNTIME_HANDOFF"
 
 
+def _repo_venv_python() -> Path:
+    if sys.platform == "win32":
+        return (Path.cwd() / ".venv" / "Scripts" / "python.exe").resolve()
+    return (Path.cwd() / ".venv" / "bin" / "python").resolve()
+
+
 def _python_runtime_warning() -> str:
     try:
-        import sys
-
-        repo_python = (Path.cwd() / ".venv" / "Scripts" / "python.exe").resolve()
+        repo_python = _repo_venv_python()
         current = Path(sys.executable).resolve()
         if repo_python.exists() and current != repo_python:
             return (
@@ -101,7 +105,7 @@ def _ensure_best_runtime() -> bool:
     try:
         if os.environ.get(_RUNTIME_HANDOFF_ENV) == "1":
             return False
-        repo_python = (Path.cwd() / ".venv" / "Scripts" / "python.exe").resolve()
+        repo_python = _repo_venv_python()
         current = Path(sys.executable).resolve()
         if repo_python.exists() and current != repo_python:
             env = os.environ.copy()
@@ -626,6 +630,9 @@ async def _main_async() -> None:
             except Exception:
                 pass
 
+    def _trace_audio(message: str):
+        _emit("audio_debug", str(message)[:220])
+
     # ── Approval wiring ───────────────────────────────────────────────────
     async def _request_approval_async(request) -> bool:
         if _bridge:
@@ -790,20 +797,24 @@ async def _main_async() -> None:
         from voice.speak import speak, speak_filler
 
         _emit("state_changed", "thinking")
+        _trace_audio("route: voice turn")
         try:
             ctx = db.get_recent_context(30)
             hint = _build_context_summary(ctx)
             runtime_facts = _runtime_status_facts()
 
             if _is_runtime_status_question(user_text):
+                _trace_audio("route: runtime status")
                 reply = _runtime_status_reply()
                 _emit("message_spoken", reply, 4)
+                _trace_audio("speaking: status reply")
                 await speak(reply)
                 return
 
             hint = f"{runtime_facts}\n\n{hint}" if hint else runtime_facts
             if _looks_like_action_request(user_text):
                 _emit("state_changed", "acting")
+                _trace_audio("route: action request")
                 try:
                     await speak_filler()
                 except Exception:
@@ -811,12 +822,15 @@ async def _main_async() -> None:
                 action_result = await execute_action(user_text, context=hint)
                 reply = _compose_action_result_reply(action_result)
             else:
+                _trace_audio("route: conversation")
                 reply = await conversation.handle_turn(user_text, context_hint=hint)
             if reply:
                 _emit("message_spoken", reply, 4)
+                _trace_audio("speaking: reply")
                 await speak(reply)
         except Exception as e:
             log.error(f"Conversation turn error: {e}")
+            _trace_audio("route error")
             _emit("state_changed", "error")
         finally:
             _emit("state_changed", "idle")

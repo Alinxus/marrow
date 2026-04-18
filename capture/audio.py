@@ -32,7 +32,13 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except Exception as exc:
+    sd = None
+    _SOUNDDEVICE_IMPORT_ERROR = str(exc)
+else:
+    _SOUNDDEVICE_IMPORT_ERROR = ""
 
 import config
 from storage import db
@@ -99,6 +105,8 @@ def _check_wake_word(text: str) -> bool:
 
 def _select_input_device():
     """Resolve input device from config or first valid input device."""
+    if sd is None:
+        return None
     configured = (config.AUDIO_INPUT_DEVICE or "").strip()
     if configured:
         try:
@@ -265,6 +273,13 @@ class AudioCaptureService:
         Blocking loop: accumulate audio chunks, transcribe when buffer is full.
         Runs in a thread executor (called from async run()).
         """
+        if sd is None:
+            log.warning(
+                "sounddevice unavailable - audio capture disabled: %s",
+                _SOUNDDEVICE_IMPORT_ERROR or "import failed",
+            )
+            _emit_audio_status("audio input unavailable")
+            return
         buffer = []
         samples_per_chunk = SAMPLE_RATE * CHUNK_SECONDS
         # Check that an input device exists before opening the stream
@@ -464,6 +479,13 @@ class AudioCaptureService:
         Real-time streaming via Deepgram SDK.
         Sends raw mic audio as 16kHz mono PCM, receives transcripts live.
         """
+        if sd is None:
+            log.warning(
+                "sounddevice unavailable - Deepgram live capture disabled: %s",
+                _SOUNDDEVICE_IMPORT_ERROR or "import failed",
+            )
+            _emit_audio_status("audio input unavailable")
+            return
         try:
             from deepgram import (
                 DeepgramClient,
@@ -637,6 +659,8 @@ class AudioCaptureService:
             return
 
         self._running = True
+        if sd is None:
+            self._audio_backend_error = _SOUNDDEVICE_IMPORT_ERROR or "sounddevice unavailable"
         try:
             from storage import db as _db
 
