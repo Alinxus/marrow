@@ -623,6 +623,60 @@ class StatsSection(QWidget):
             pass
 
 
+class WorkbenchSection(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        lay.addWidget(_section_label("Reasoning Workbench"))
+        self._title = _lbl("No active deep-reasoning problem", TEXT_PRI, 9, bold=True)
+        self._title.setWordWrap(True)
+        self._summary = _lbl("", TEXT_SEC, 8)
+        self._summary.setWordWrap(True)
+        self._state = _lbl("", TEXT_DIM, 8)
+        self._state.setWordWrap(True)
+        lay.addWidget(self._title)
+        lay.addWidget(self._summary)
+        lay.addWidget(self._state)
+
+    def update_payload(self, payload_json: str):
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return
+        title = (payload.get("problem_title") or "").strip()
+        summary = (payload.get("problem_summary") or payload.get("project_brief") or "").strip()
+        stage = (payload.get("stage") or "").strip()
+        status = (payload.get("status") or "").strip()
+        assumptions = payload.get("assumptions") or []
+        blockers = payload.get("blockers") or []
+        next_steps = payload.get("next_steps") or []
+        verification = payload.get("verification_status") or {}
+
+        self._title.setText(title[:140] if title else "Deep reasoning active")
+        parts = []
+        if summary:
+            parts.append(summary[:180])
+        if assumptions:
+            parts.append("assume: " + "; ".join(str(x)[:50] for x in assumptions[:2]))
+        if blockers:
+            parts.append("blockers: " + "; ".join(str(x)[:50] for x in blockers[:2]))
+        if next_steps:
+            parts.append("next: " + "; ".join(str(x)[:50] for x in next_steps[:2]))
+        self._summary.setText(" · ".join(parts[:3]))
+
+        verify_line = verification.get("status", "")
+        issues = verification.get("issues") or []
+        line = f"{stage} · {status}" if stage or status else ""
+        if verify_line:
+            line = f"{line} · verify {verify_line}" if line else f"verify {verify_line}"
+        if issues:
+            line = f"{line} · issue: {str(issues[0])[:70]}" if line else str(issues[0])[:70]
+        self._state.setText(line)
+
+
 # ─── Main dashboard ───────────────────────────────────────────────────────────
 
 
@@ -751,6 +805,10 @@ class MarrowDashboard(QWidget):
         info_lay.addWidget(self._message)
         info_lay.addWidget(_sep())
 
+        self._workbench = WorkbenchSection()
+        info_lay.addWidget(self._workbench)
+        info_lay.addWidget(_sep())
+
         self._stats = StatsSection()
         info_lay.addWidget(self._stats)
         info_lay.addStretch()
@@ -788,6 +846,7 @@ class MarrowDashboard(QWidget):
             b.perception_update.connect(self._watching.update_snapshot)
             b.message_spoken.connect(self._on_marrow_spoke)
             b.stats_updated.connect(self._stats.update_stats)
+            b.deep_reasoning_update.connect(self._workbench.update_payload)
             b.mic_active.connect(self._on_mic_active)
             b.transcript_heard.connect(self._on_transcript)
             b.task_response.connect(self._on_task_response)

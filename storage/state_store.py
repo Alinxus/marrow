@@ -15,6 +15,7 @@ MISSION_FILE = STATE_DIR / "missions.json"
 TWIN_FILE = STATE_DIR / "twin.json"
 GRAPH_FILE = STATE_DIR / "graph.json"
 SKILLS_FILE = STATE_DIR / "skills.json"
+SCRATCHPAD_FILE = STATE_DIR / "scratchpad.json"
 
 _LOCK = threading.RLock()
 
@@ -25,6 +26,8 @@ def _default_payload(kind: str) -> dict[str, Any]:
         key = "missions"
     elif kind == "twin":
         key = "timeline"
+    elif kind == "scratchpad":
+        key = "sessions"
     return {
         "schema_version": STATE_VERSION,
         "kind": kind,
@@ -76,6 +79,9 @@ def init_state_store() -> None:
     skills = _read_json(SKILLS_FILE, "skills")
     skills.setdefault("items", [])
     _write_json(SKILLS_FILE, "skills", skills)
+    scratchpad = _read_json(SCRATCHPAD_FILE, "scratchpad")
+    scratchpad.setdefault("sessions", {})
+    _write_json(SCRATCHPAD_FILE, "scratchpad", scratchpad)
 
 
 def load_missions() -> dict[str, Any]:
@@ -159,3 +165,75 @@ def load_skills() -> dict[str, Any]:
 def save_skills(payload: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("items", [])
     return _write_json(SKILLS_FILE, "skills", payload)
+
+
+def load_scratchpad() -> dict[str, Any]:
+    payload = _read_json(SCRATCHPAD_FILE, "scratchpad")
+    payload.setdefault("sessions", {})
+    return payload
+
+
+def save_scratchpad(payload: dict[str, Any]) -> dict[str, Any]:
+    payload.setdefault("sessions", {})
+    return _write_json(SCRATCHPAD_FILE, "scratchpad", payload)
+
+
+def get_scratchpad_session(session_id: str = "default") -> dict[str, Any]:
+    payload = load_scratchpad()
+    sessions = payload.setdefault("sessions", {})
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        session = {
+            "session_id": session_id,
+            "problem_title": "",
+            "problem_summary": "",
+            "project_brief": "",
+            "domain": "general",
+            "task_type": "analyze",
+            "goals": [],
+            "learning_goals": [],
+            "constraints": [],
+            "assumptions": [],
+            "unknowns": [],
+            "evidence": [],
+            "attempted_approaches": [],
+            "dead_ends": [],
+            "decisions": [],
+            "design_decisions": [],
+            "experiments": [],
+            "blockers": [],
+            "concepts": [],
+            "teaching_notes": [],
+            "open_questions": [],
+            "next_steps": [],
+            "recommended_tools": [],
+            "verification_status": {"status": "not_run", "issues": [], "checks": []},
+            "last_user_turn": "",
+            "last_assistant_turn": "",
+            "history": [],
+            "updated_at": time.time(),
+        }
+        sessions[session_id] = session
+        save_scratchpad(payload)
+    return session
+
+
+def upsert_scratchpad_session(
+    session_id: str,
+    session: dict[str, Any],
+) -> dict[str, Any]:
+    payload = load_scratchpad()
+    sessions = payload.setdefault("sessions", {})
+    session["session_id"] = session_id
+    session["updated_at"] = time.time()
+    sessions[session_id] = session
+    save_scratchpad(payload)
+    return session
+
+
+def clear_scratchpad_session(session_id: str = "default") -> dict[str, Any]:
+    payload = load_scratchpad()
+    sessions = payload.setdefault("sessions", {})
+    sessions.pop(session_id, None)
+    save_scratchpad(payload)
+    return get_scratchpad_session(session_id)

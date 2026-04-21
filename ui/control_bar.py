@@ -236,6 +236,11 @@ class MarrowControlBar(QWidget):
         self._audio_lbl.setVisible(False)
         body_l.addWidget(self._audio_lbl)
 
+        self._workbench_lbl = _lbl("", QColor(72, 62, 110), 8)
+        self._workbench_lbl.setWordWrap(True)
+        self._workbench_lbl.setVisible(False)
+        body_l.addWidget(self._workbench_lbl)
+
         self._chat = ChatSection()
         self._chat.task_submitted.connect(self._on_task_submitted)
         body_l.addWidget(self._chat)
@@ -257,6 +262,7 @@ class MarrowControlBar(QWidget):
             b.agent_update.connect(self._on_agent_update)
             b.audio_debug.connect(self._on_audio_debug)
             b.perception_update.connect(self._on_perception_update)
+            b.deep_reasoning_update.connect(self._on_deep_reasoning_update)
         except Exception as e:
             log.warning(f"Control bar bridge failed: {e}")
 
@@ -382,6 +388,23 @@ class MarrowControlBar(QWidget):
         if text:
             self._perception_lbl.setText(text)
             self._perception_lbl.setVisible(True)
+
+    def _on_deep_reasoning_update(self, payload_json: str):
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return
+        title = (payload.get("problem_title") or "").strip()
+        next_steps = payload.get("next_steps") or []
+        verification = payload.get("verification_status") or {}
+        line = title[:64] if title else "deep reasoning active"
+        if next_steps:
+            line += f" · next: {str(next_steps[0])[:42]}"
+        vstatus = verification.get("status")
+        if vstatus:
+            line += f" · verify {vstatus}"
+        self._workbench_lbl.setText(line)
+        self._workbench_lbl.setVisible(True)
 
     def _ask(self):
         try:

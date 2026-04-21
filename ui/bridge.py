@@ -97,6 +97,9 @@ class MarrowBridge(QObject):
     # Rich screen/perception snapshot payload: JSON string
     perception_update = pyqtSignal(str)
 
+    # Deep reasoning workbench payload: JSON string
+    deep_reasoning_update = pyqtSignal(str)
+
     # ── UI → Backend signals ──────────────────────────────────────────────
     # User pressed "Ask Marrow" button — triggers on-demand activation
     ask_requested = pyqtSignal()

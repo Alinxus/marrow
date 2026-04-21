@@ -103,6 +103,71 @@ def _check_wake_word(text: str) -> bool:
     return False
 
 
+def _looks_like_routable_turn(text: str) -> bool:
+    """Heuristic for hands-free routing when the user is clearly addressing Marrow."""
+    low = " ".join((text or "").lower().split())
+    if not low:
+        return False
+
+    direct_prefixes = (
+        "marrow ",
+        "hey marrow ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "please ",
+        "open ",
+        "close ",
+        "start ",
+        "stop ",
+        "run ",
+        "create ",
+        "write ",
+        "search ",
+        "find ",
+        "check ",
+        "send ",
+        "schedule ",
+        "remind ",
+        "call ",
+        "email ",
+        "message ",
+        "summarize ",
+        "tell me ",
+        "show me ",
+        "help me ",
+        "i need ",
+    )
+    if low.startswith(direct_prefixes):
+        return True
+
+    question_starts = (
+        "what ",
+        "why ",
+        "how ",
+        "when ",
+        "who ",
+        "where ",
+        "which ",
+        "should ",
+        "do you ",
+        "are you ",
+        "can we ",
+        "could we ",
+    )
+    if low.startswith(question_starts):
+        return True
+
+    if "?" in text:
+        return True
+
+    words = low.split()
+    if len(words) <= 2:
+        return low in {"yes", "no", "okay", "ok", "sure", "go ahead", "do it"}
+
+    return False
+
+
 def _select_input_device():
     """Resolve input device from config or first valid input device."""
     if sd is None:
@@ -448,31 +513,30 @@ class AudioCaptureService:
             pass
 
         # If the user is speaking directly to Marrow without a clean wake-word hit,
-        # treat short imperative utterances as activation attempts to reduce dead air.
-        lowered = text.lower().strip()
-        direct_prefixes = (
-            "marrow ",
-            "hey marrow ",
-            "can you ",
-            "could you ",
-            "please ",
-        )
+        # route obviously-addressed requests and questions into the same pipeline
+        # instead of only surfacing them as dashboard transcript text.
+        lowered = " ".join(text.lower().split())
         if (
             config.CONVERSATION_ENABLED
-            and any(lowered.startswith(prefix) for prefix in direct_prefixes)
+            and _conversation_turn_callback
             and self._loop
+            and _looks_like_routable_turn(text)
         ):
-            if _conversation_turn_callback:
-                try:
-                    from brain import conversation
+            try:
+                from brain import conversation
 
-                    conversation.activate_session()
-                except Exception:
-                    pass
-                _emit_audio_status("direct request detected")
-                asyncio.run_coroutine_threadsafe(
-                    _conversation_turn_callback(text), self._loop
-                )
+                conversation.activate_session()
+            except Exception:
+                pass
+            route_label = (
+                "wake-free direct request"
+                if lowered.startswith(("marrow ", "hey marrow "))
+                else "wake-free routed turn"
+            )
+            _emit_audio_status(route_label)
+            asyncio.run_coroutine_threadsafe(
+                _conversation_turn_callback(text), self._loop
+            )
 
     async def _run_deepgram(self) -> None:
         """

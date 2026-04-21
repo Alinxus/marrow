@@ -155,6 +155,7 @@ PRESENCE_PING_SECONDS = 240
 
 _KIND_COOLDOWNS = {
     "mentor_proactive": 120,
+    "live_work_mentor": 150,
     "presence_ping": 240,
     "ambient_pulse": 180,
     "calendar": 180,
@@ -220,6 +221,108 @@ def _get_window_title() -> str:
     except Exception:
         pass
     return ""
+
+
+def _get_recent_work_snapshots(window_seconds: int = 12 * 60, limit: int = 80) -> list[dict]:
+    try:
+        return db.get_recent_screenshots(window_seconds, limit=limit)
+    except Exception:
+        return []
+
+
+def _detect_stuckness(shots: list[dict]) -> dict:
+    """
+    Heuristic stuck detector:
+    - same productive app for a while
+    - low unique screen changes
+    - repeated error/debug/problem markers
+    """
+    if not shots:
+        return {"is_stuck": False, "confidence": 0.0, "reason": "no_shots"}
+
+    ordered = sorted(shots, key=lambda s: float(s.get("ts", 0) or 0), reverse=True)
+    latest = ordered[0]
+    current_app = (latest.get("app_name") or "").lower().strip()
+    if not current_app or not _is_productive(current_app):
+        return {"is_stuck": False, "confidence": 0.0, "reason": "not_productive"}
+
+    contiguous: list[dict] = []
+    for shot in ordered:
+        app = (shot.get("app_name") or "").lower().strip()
+        if app != current_app:
+            break
+        contiguous.append(shot)
+
+    if len(contiguous) < 4:
+        return {"is_stuck": False, "confidence": 0.0, "reason": "too_short"}
+
+    newest_ts = float(contiguous[0].get("ts", 0) or 0)
+    oldest_ts = float(contiguous[-1].get("ts", 0) or 0)
+    duration = max(0, int(newest_ts - oldest_ts))
+    hashes = {
+        (shot.get("content_hash") or "").strip()
+        for shot in contiguous
+        if (shot.get("content_hash") or "").strip()
+    }
+    unique_ratio = (len(hashes) / max(1, len(contiguous))) if contiguous else 1.0
+    combined = "\n".join(
+        " ".join(
+            (
+                str(shot.get("window_title") or ""),
+                str(shot.get("focused_context") or ""),
+                str(shot.get("ocr_text") or ""),
+            )
+        ).lower()
+        for shot in contiguous[:8]
+    )
+    error_markers = (
+        "error",
+        "traceback",
+        "exception",
+        "failed",
+        "undefined",
+        "nan",
+        "todo",
+        "fixme",
+        "stuck",
+        "blocked",
+        "warning",
+        "failing",
+        "assert",
+    )
+    marker_hits = sum(1 for m in error_markers if m in combined)
+
+    is_stuck = duration >= 7 * 60 and (unique_ratio <= 0.45 or marker_hits >= 2)
+    confidence = 0.0
+    if is_stuck:
+        confidence = min(0.95, 0.45 + (duration / 1800.0) + max(0, 0.15 * marker_hits))
+    return {
+        "is_stuck": is_stuck,
+        "confidence": round(confidence, 2),
+        "reason": f"duration={duration}s unique_ratio={unique_ratio:.2f} marker_hits={marker_hits}",
+        "duration_seconds": duration,
+        "unique_ratio": unique_ratio,
+        "marker_hits": marker_hits,
+        "app": current_app,
+    }
+
+
+def _mentor_style_instruction() -> str:
+    style = str(getattr(config, "LIVE_WORK_MENTOR_STYLE", "balanced") or "balanced").lower()
+    tolerance = max(1, min(5, int(getattr(config, "LIVE_WORK_MENTOR_TOLERANCE", 3) or 3)))
+    tone = {
+        "quiet": "Speak rarely. Only interrupt for high-signal guidance.",
+        "balanced": "Speak when there is a concrete edge, not for narration.",
+        "aggressive": "Be assertive and proactive when you see leverage.",
+    }.get(style, "Speak when there is a concrete edge, not for narration.")
+    tol_text = {
+        1: "User tolerance is very low: interruptions must be rare and extremely high-value.",
+        2: "User tolerance is low: keep interruptions selective.",
+        3: "User tolerance is moderate: allow useful guidance, but avoid spam.",
+        4: "User tolerance is high: interrupt when you can materially help.",
+        5: "User tolerance is very high: bias toward frequent high-signal coaching.",
+    }[tolerance]
+    return f"{tone} {tol_text}"
 
 
 def _emit_toast(title: str, body: str, urgency: int = 3) -> None:
@@ -1189,6 +1292,146 @@ async def _check_mentor_proactive() -> None:
         log.debug(f"Mentor proactive check failed: {e}")
 
 
+async def _check_live_work_mentor() -> None:
+    """Screen-aware proactive coaching for focused work moments."""
+    if not getattr(config, "LIVE_WORK_MENTOR_ENABLED", True):
+        return
+    if _in_meeting_now() or _user_actively_speaking():
+        return
+
+    now = time.time()
+    if (
+        now - float(_state.get("last_kind_emit_ts", {}).get("live_work_mentor", 0.0))
+        < int(getattr(config, "LIVE_WORK_MENTOR_MIN_GAP_SECONDS", 150))
+    ):
+        return
+
+    try:
+        from brain.deep_reasoning import get_scratchpad_summary
+        from brain.llm import get_client
+    except Exception:
+        return
+
+    recent_shots = _get_recent_work_snapshots(12 * 60, limit=80)
+    stuck = _detect_stuckness(recent_shots)
+
+    ctx = db.get_recent_context(180)
+    shots = ctx.get("screenshots", [])
+    if not shots:
+        return
+    latest = shots[0]
+    app = (latest.get("app_name") or "").strip()
+    title = (latest.get("window_title") or "").strip()
+    focused = (latest.get("focused_context") or "").strip()
+    ocr = (latest.get("ocr_text") or "").strip()
+    combined = "\n".join(x for x in [title, focused, ocr] if x).lower()
+
+    if not app or not _is_productive(app):
+        return
+
+    work_markers = (
+        "error",
+        "traceback",
+        "todo",
+        "fixme",
+        "function",
+        "class",
+        "api",
+        "equation",
+        "design",
+        "architecture",
+        "simulation",
+        "experiment",
+        "constraint",
+        "assumption",
+        "debug",
+        "compile",
+        "test",
+    )
+    if not any(marker in combined for marker in work_markers) and not stuck.get("is_stuck"):
+        return
+
+    llm = get_client()
+    if llm.provider == "none":
+        return
+
+    scratchpad = ""
+    try:
+        scratchpad = get_scratchpad_summary(getattr(config, "DEEP_REASONING_SESSION_ID", "default"))
+    except Exception:
+        pass
+
+    prompt = f"""You are Marrow, trying to feel like the closest thing to Jarvis that fits in a computer.
+
+Decide whether to proactively interrupt with one sharp work-mentor nudge.
+
+Return strict JSON only:
+{{"speak": true|false, "mode": "teaching"|"execution"|"challenge", "message": "", "urgency": 2|3|4, "reason": ""}}
+
+Only speak if there is a specific high-value intervention right now:
+- a better next step
+- a likely mistake or blind spot
+- an assumption to challenge
+- a tiny teaching insight that helps the user move faster while learning
+- a verification/simulation/research step they should do before going further
+
+Do not speak for generic encouragement, narration, or obvious commentary.
+Keep the message to 1-2 sentences max.
+Pick mode:
+- teaching: explain a concept or mental model that directly unlocks progress now
+- execution: tell them the best next concrete step
+- challenge: push on a risky assumption, missing verification, or flawed direction
+
+{_mentor_style_instruction()}
+
+Current app: {app}
+Window title: {title[:160]}
+Focused context: {focused[:260]}
+Screen summary: {ocr[:1200]}
+
+Stuckness signal:
+is_stuck={stuck.get("is_stuck")} confidence={stuck.get("confidence")} details={stuck.get("reason")}
+
+Current scratchpad:
+{scratchpad[:1800] if scratchpad else "None"}
+"""
+    try:
+        response = await llm.create(
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=140,
+            model_type="scoring",
+        )
+        raw = (response.text or "").strip()
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            return
+        data = json.loads(raw[start:end])
+        if not bool(data.get("speak")):
+            return
+        mode = str(data.get("mode", "") or "").strip().lower()
+        if mode not in {"teaching", "execution", "challenge"}:
+            mode = "execution" if stuck.get("is_stuck") else "teaching"
+        message = (data.get("message") or "").strip()
+        if not message:
+            return
+        urgency = max(2, min(4, int(data.get("urgency", 3))))
+        prefix = {
+            "teaching": "Quick concept: ",
+            "execution": "Best next step: ",
+            "challenge": "Challenge: ",
+        }.get(mode, "")
+        if prefix and not message.lower().startswith(prefix.lower()):
+            message = prefix + message
+        await _surface_signal(
+            message,
+            urgency=urgency,
+            kind="live_work_mentor",
+        )
+    except Exception as e:
+        log.debug(f"Live work mentor check failed: {e}")
+
+
 # ─── Main loop ────────────────────────────────────────────────────────────────
 
 
@@ -1218,6 +1461,8 @@ async def proactive_loop() -> None:
                 await _check_presence_ping()
             if getattr(config, "MENTOR_PROACTIVE_ENABLED", False):
                 await _check_mentor_proactive()
+            if getattr(config, "LIVE_WORK_MENTOR_ENABLED", True):
+                await _check_live_work_mentor()
             _state["consecutive_errors"] = 0
             if _state["health_state"] != "active":
                 _state["health_state"] = "recovering"

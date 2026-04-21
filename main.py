@@ -17,6 +17,7 @@ UI architecture:
 """
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -232,6 +233,7 @@ def _handle_slash_command(text: str) -> str | None:
             "- /chatstyle <short|balanced|detailed|status>\n"
             "- /proactive <quiet|normal|talkative|status>\n"
             "- /conversation <on|off|status>\n"
+            "- /scratchpad <status|clear>\n"
             "- /mission <start|pause|resume|rollback|status> [goal]\n"
             "- /swarm <run|status> [goal]\n"
             "- /audio <on|off|status>\n"
@@ -421,6 +423,19 @@ def _handle_slash_command(text: str) -> str | None:
         if style not in ("short", "balanced", "detailed"):
             return "Usage: /chatstyle <short|balanced|detailed|status>"
         return _apply_settings_updates({"CONVERSATION_RESPONSE_STYLE": style})
+
+    if cmd == "/scratchpad":
+        action = args[0].lower() if args else "status"
+        try:
+            from brain.deep_reasoning import get_scratchpad_summary
+            if action == "clear":
+                state_store.clear_scratchpad_session(config.DEEP_REASONING_SESSION_ID)
+                return "Deep reasoning scratchpad cleared."
+            if action == "status":
+                return get_scratchpad_summary(config.DEEP_REASONING_SESSION_ID)
+        except Exception as e:
+            return f"Scratchpad unavailable: {e}"
+        return "Usage: /scratchpad <status|clear>"
 
     if cmd == "/proactive":
         if not args or args[0].lower() == "status":
@@ -759,6 +774,17 @@ async def _main_async() -> None:
         )
         return "\n".join(parts)
 
+    def _parse_json_object(text: str) -> dict:
+        raw = (text or "").strip()
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return {}
+        try:
+            return json.loads(raw[start : end + 1])
+        except Exception:
+            return {}
+
     def _looks_like_action_request(text: str) -> bool:
         low = (text or "").strip().lower()
         if not low:
@@ -786,9 +812,115 @@ async def _main_async() -> None:
         )
         if low.startswith(action_prefixes):
             return True
-        if low.startswith(("can you ", "could you ", "please ", "go ahead and ")):
+        if low.startswith(
+            (
+                "can you ",
+                "could you ",
+                "would you ",
+                "please ",
+                "go ahead and ",
+                "i need you to ",
+                "help me ",
+                "let's ",
+                "lets ",
+            )
+        ):
             return True
         return False
+
+    def _heuristic_intent_decision(user_text: str) -> dict:
+        low = (user_text or "").strip().lower()
+        if not low:
+            return {
+                "intent": "ignore",
+                "confidence": 1.0,
+                "action_request": "",
+                "reply": "",
+                "reason": "empty",
+            }
+        if _looks_like_action_request(user_text):
+            return {
+                "intent": "action",
+                "confidence": 0.72,
+                "action_request": user_text.strip(),
+                "reply": "",
+                "reason": "heuristic_action_request",
+            }
+        if len(low.split()) <= 2 and low in {"yes", "no", "okay", "ok", "sure"}:
+            return {
+                "intent": "conversation",
+                "confidence": 0.8,
+                "action_request": "",
+                "reply": "",
+                "reason": "short_followup",
+            }
+        return {
+            "intent": "conversation",
+            "confidence": 0.6,
+            "action_request": "",
+            "reply": "",
+            "reason": "default_conversation",
+        }
+
+    async def _classify_voice_turn(user_text: str, context_hint: str = "") -> dict:
+        """Semantic router for voice turns: action, conversation, clarify, or ignore."""
+        heuristic = _heuristic_intent_decision(user_text)
+        try:
+            from brain.llm import get_client
+
+            llm = get_client()
+            if llm.provider == "none":
+                return heuristic
+
+            prompt = f"""Classify this live voice utterance for a desktop assistant.
+
+Return strict JSON only with this schema:
+{{
+  "intent": "action" | "conversation" | "clarify" | "ignore",
+  "confidence": 0.0,
+  "action_request": "<normalized task to execute or empty>",
+  "reply": "<only fill when intent is clarify or ignore; otherwise empty>",
+  "reason": "<very short>"
+}}
+
+Choose:
+- "action" when the user is asking the assistant to do something in the world, on the computer, on the web, in apps, or by using tools.
+- "conversation" when the user mainly wants an answer, advice, explanation, status, brainstorming, or back-and-forth talk.
+- "clarify" when an action is intended but key details are missing or ambiguous, and provide one short spoken follow-up in "reply".
+- "ignore" only for accidental/noise/filler, with a short reply only if truly useful.
+
+Rules:
+- Prefer "action" for natural requests like "can you...", "i need you to...", "help me...", "let's...", and direct imperatives.
+- Prefer "conversation" for questions that mainly seek information or judgment.
+- If the request references something implicit like "that tab" or "it", use context when possible. If still ambiguous, choose "clarify".
+- Keep "action_request" concise but faithful to the user's intent.
+- Do not be overly cautious: if the likely meaning is actionable, choose action.
+
+Context:
+{(context_hint or "None")[:1400]}
+
+Utterance:
+{user_text}
+"""
+            resp = await llm.create(
+                messages=[{"role": "user", "content": prompt}],
+                model_type="scoring",
+                max_tokens=220,
+            )
+            data = _parse_json_object(resp.text)
+            intent = str(data.get("intent", "")).strip().lower()
+            if intent not in {"action", "conversation", "clarify", "ignore"}:
+                return heuristic
+            return {
+                "intent": intent,
+                "confidence": float(data.get("confidence", heuristic["confidence"]) or 0.0),
+                "action_request": str(data.get("action_request", "") or "").strip(),
+                "reply": str(data.get("reply", "") or "").strip(),
+                "reason": str(data.get("reason", "") or "").strip(),
+            }
+        except Exception as exc:
+            log.debug(f"Voice intent classifier fallback: {exc}")
+            return heuristic
 
     async def _handle_conversation_turn(user_text: str) -> None:
         """Low-latency conversational turn handler (voice-first back-and-forth)."""
@@ -815,18 +947,53 @@ async def _main_async() -> None:
                 return
 
             hint = f"{runtime_facts}\n\n{hint}" if hint else runtime_facts
-            if _looks_like_action_request(user_text):
+            decision = await _classify_voice_turn(user_text, context_hint=hint)
+            intent = decision.get("intent", "conversation")
+            confidence = float(decision.get("confidence", 0.0) or 0.0)
+            _trace_audio(
+                f"intent: {intent} ({confidence:.2f}) {decision.get('reason', '')[:60]}"
+            )
+
+            if intent == "ignore":
+                _trace_audio("route: ignore")
+                reply = (decision.get("reply") or "").strip()
+                if not reply:
+                    return
+            elif intent == "clarify":
+                _trace_audio("route: clarify")
+                reply = (decision.get("reply") or "").strip()
+                if not reply:
+                    reply = "What do you want me to do exactly?"
+            elif intent == "action":
                 _emit("state_changed", "acting")
                 _trace_audio("route: action request")
                 try:
                     await speak_filler()
                 except Exception:
                     pass
-                action_result = await execute_action(user_text, context=hint)
+                action_text = (decision.get("action_request") or "").strip() or user_text
+                action_result = await execute_action(action_text, context=hint)
                 reply = _compose_action_result_reply(action_result)
             else:
-                _trace_audio("route: conversation")
-                reply = await conversation.handle_turn(user_text, context_hint=hint)
+                deep_reply = None
+                if config.DEEP_REASONING_ENABLED:
+                    try:
+                        from brain.deep_reasoning import maybe_handle_deep_reasoning
+
+                        _trace_audio("route: deep reasoning check")
+                        deep_reply = await maybe_handle_deep_reasoning(
+                            user_text,
+                            context_hint=hint,
+                            session_id=config.DEEP_REASONING_SESSION_ID,
+                        )
+                    except Exception as exc:
+                        log.debug(f"Deep reasoning route skipped: {exc}")
+                if deep_reply:
+                    _trace_audio("route: deep reasoning")
+                    reply = deep_reply
+                else:
+                    _trace_audio("route: conversation")
+                    reply = await conversation.handle_turn(user_text, context_hint=hint)
             if reply:
                 _emit("message_spoken", reply, 4)
                 _trace_audio("speaking: reply")
@@ -1130,31 +1297,77 @@ async def _execute_user_task(text: str) -> None:
     Runs on the asyncio loop, called from Qt thread via run_coroutine_threadsafe.
     """
     from actions.executor import execute_action
+    from brain import conversation
     from ui.bridge import get_bridge
 
     bridge = get_bridge()
-    bridge.state_changed.emit("acting")
     try:
         mission_result = await _handle_mission_command(text)
         if mission_result is not None:
+            bridge.state_changed.emit("acting")
             bridge.task_response.emit(mission_result)
             bridge.toast_requested.emit(config.MARROW_NAME, mission_result[:200], 4)
             return
 
         swarm_result = await _handle_swarm_command(text)
         if swarm_result is not None:
+            bridge.state_changed.emit("acting")
             bridge.task_response.emit(swarm_result)
             bridge.toast_requested.emit(config.MARROW_NAME, swarm_result[:200], 4)
             return
 
         slash_result = _handle_slash_command(text)
         if slash_result is not None:
+            bridge.state_changed.emit("acting")
             bridge.task_response.emit(slash_result)
             bridge.toast_requested.emit(config.MARROW_NAME, slash_result[:200], 4)
             return
 
-        result = await execute_action(text)
-        out = (result or "Done.").strip()
+        ctx = db.get_recent_context(30)
+        hint = _build_context_summary(ctx)
+        runtime_facts = _runtime_status_facts()
+        hint = f"{runtime_facts}\n\n{hint}" if hint else runtime_facts
+
+        if _is_runtime_status_question(text):
+            bridge.state_changed.emit("thinking")
+            reply = _runtime_status_reply()
+            bridge.task_response.emit(reply)
+            return
+
+        decision = await _classify_voice_turn(text, context_hint=hint)
+        intent = decision.get("intent", "conversation")
+
+        if intent == "action":
+            bridge.state_changed.emit("acting")
+            action_text = (decision.get("action_request") or "").strip() or text
+            result = await execute_action(action_text, context=hint)
+            out = _compose_action_result_reply(result)
+        elif intent == "clarify":
+            bridge.state_changed.emit("thinking")
+            out = (decision.get("reply") or "").strip() or "What exactly do you want me to do?"
+        elif intent == "ignore":
+            bridge.state_changed.emit("thinking")
+            out = (decision.get("reply") or "").strip() or "I didn't get a real request there."
+        else:
+            bridge.state_changed.emit("thinking")
+            deep_reply = None
+            if config.DEEP_REASONING_ENABLED:
+                try:
+                    from brain.deep_reasoning import maybe_handle_deep_reasoning
+
+                    deep_reply = await maybe_handle_deep_reasoning(
+                        text,
+                        context_hint=hint,
+                        session_id=config.DEEP_REASONING_SESSION_ID,
+                    )
+                except Exception as exc:
+                    log.debug(f"Deep reasoning text route skipped: {exc}")
+            if deep_reply:
+                out = deep_reply
+            else:
+                out = await conversation.handle_turn(text, context_hint=hint)
+
+        out = (out or "Done.").strip()
         bridge.task_response.emit(out)
         bridge.toast_requested.emit(config.MARROW_NAME, out[:200], 4)
     except Exception as e:

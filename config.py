@@ -202,6 +202,8 @@ CONVERSATION_FAST_PATH_ENABLED = (
 CONVERSATION_RESPONSE_STYLE = os.environ.get(
     "CONVERSATION_RESPONSE_STYLE", "balanced"
 ).lower()
+DEEP_REASONING_ENABLED = os.environ.get("DEEP_REASONING_ENABLED", "1") == "1"
+DEEP_REASONING_SESSION_ID = os.environ.get("DEEP_REASONING_SESSION_ID", "default")
 
 # Smart home (optional Home Assistant bridge)
 HOME_ASSISTANT_URL = os.environ.get("HOME_ASSISTANT_URL", "")
@@ -259,6 +261,16 @@ PROACTIVE_AMBIENT_PULSE_ENABLED = (
 # Presence ping is intentionally disabled by default; it can feel noisy.
 PROACTIVE_PRESENCE_PING_ENABLED = (
     os.environ.get("PROACTIVE_PRESENCE_PING_ENABLED", "0") == "1"
+)
+LIVE_WORK_MENTOR_ENABLED = os.environ.get("LIVE_WORK_MENTOR_ENABLED", "1") == "1"
+LIVE_WORK_MENTOR_MIN_GAP_SECONDS = int(
+    os.environ.get("LIVE_WORK_MENTOR_MIN_GAP_SECONDS", "150")
+)
+LIVE_WORK_MENTOR_STYLE = os.environ.get(
+    "LIVE_WORK_MENTOR_STYLE", "balanced"
+).lower()
+LIVE_WORK_MENTOR_TOLERANCE = int(
+    os.environ.get("LIVE_WORK_MENTOR_TOLERANCE", "3")
 )
 
 # Mentor-style buffered proactive lane (ported pattern from Omi)
