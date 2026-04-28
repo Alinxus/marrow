@@ -396,10 +396,14 @@ class MarrowControlBar(QWidget):
             return
         title = (payload.get("problem_title") or "").strip()
         next_steps = payload.get("next_steps") or []
+        execution = payload.get("execution_status") or {}
         verification = payload.get("verification_status") or {}
         line = title[:64] if title else "deep reasoning active"
         if next_steps:
             line += f" · next: {str(next_steps[0])[:42]}"
+        exec_status = execution.get("status")
+        if exec_status:
+            line += f" Â· exec {str(exec_status)[:18]}"
         vstatus = verification.get("status")
         if vstatus:
             line += f" · verify {vstatus}"

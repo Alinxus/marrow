@@ -74,3 +74,56 @@ def add_task_signal(task_name: str, status: str, mission_id: str = "") -> dict[s
     event = {"ts": ts, "type": "task_signal", "task": task_name, "status": status}
     state_store.append_twin_event(event)
     return event
+
+
+def get_active_workspace_summary(limit: int = 6) -> str:
+    payload = state_store.load_twin()
+    entities = payload.get("entities", {}) or {}
+    timeline = payload.get("timeline", []) or []
+    lines: list[str] = ["[Desktop twin]"]
+
+    recent_focus = [item for item in timeline[-12:] if item.get("type") == "focus_change"]
+    if recent_focus:
+        latest = recent_focus[-1]
+        app = str(latest.get("app", "") or "").strip()
+        title = str(latest.get("window_title", "") or "").strip()
+        if app or title:
+            lines.append(f"Current focus: {' | '.join(x for x in [app, title] if x)[:220]}")
+
+    apps = entities.get("apps", {}) or {}
+    if apps:
+        ordered_apps = sorted(
+            apps.items(),
+            key=lambda kv: float((kv[1] or {}).get("last_seen", 0.0) or 0.0),
+            reverse=True,
+        )
+        names = [str(name) for name, _ in ordered_apps[:limit] if str(name).strip()]
+        if names:
+            lines.append("Recent apps: " + ", ".join(names))
+
+    tasks = entities.get("tasks", {}) or {}
+    if tasks:
+        ordered_tasks = sorted(
+            tasks.items(),
+            key=lambda kv: float((kv[1] or {}).get("last_seen", 0.0) or 0.0),
+            reverse=True,
+        )
+        task_bits = []
+        for name, meta in ordered_tasks[:limit]:
+            status = str((meta or {}).get("status", "") or "").strip()
+            task_bits.append(f"{name} ({status})" if status else str(name))
+        if task_bits:
+            lines.append("Task signals: " + "; ".join(task_bits))
+
+    windows = entities.get("windows", {}) or {}
+    if windows:
+        ordered_windows = sorted(
+            windows.items(),
+            key=lambda kv: float((kv[1] or {}).get("last_seen", 0.0) or 0.0),
+            reverse=True,
+        )
+        names = [str(name)[:120] for name, _ in ordered_windows[:3] if str(name).strip()]
+        if names:
+            lines.append("Recent windows: " + " | ".join(names))
+
+    return "\n".join(lines[:5])

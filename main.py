@@ -81,10 +81,14 @@ log = logging.getLogger("marrow")
 _RUNTIME_HANDOFF_ENV = "MARROW_RUNTIME_HANDOFF"
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
 def _repo_venv_python() -> Path:
     if sys.platform == "win32":
-        return (Path.cwd() / ".venv" / "Scripts" / "python.exe").resolve()
-    return (Path.cwd() / ".venv" / "bin" / "python").resolve()
+        return (_repo_root() / ".venv" / "Scripts" / "python.exe").resolve()
+    return (_repo_root() / ".venv" / "bin" / "python").resolve()
 
 
 def _python_runtime_warning() -> str:
@@ -112,7 +116,7 @@ def _ensure_best_runtime() -> bool:
             env = os.environ.copy()
             env[_RUNTIME_HANDOFF_ENV] = "1"
             args = [str(repo_python), str(Path(__file__).resolve())]
-            subprocess.Popen(args, cwd=str(Path.cwd()), env=env)
+            subprocess.Popen(args, cwd=str(_repo_root()), env=env)
             return True
     except Exception:
         pass
@@ -972,7 +976,49 @@ Utterance:
                 except Exception:
                     pass
                 action_text = (decision.get("action_request") or "").strip() or user_text
-                action_result = await execute_action(action_text, context=hint)
+                action_plan = None
+                if config.DEEP_REASONING_ENABLED:
+                    try:
+                        from brain.execution_engine import prepare_reasoned_action
+
+                        action_plan = await prepare_reasoned_action(
+                            action_text,
+                            context_hint=hint,
+                            session_id=config.DEEP_REASONING_SESSION_ID,
+                        )
+                        if action_plan.get("mode") == "clarify":
+                            reply = (
+                                action_plan.get("clarifying_question")
+                                or "What exactly should I do?"
+                            )
+                            _emit("message_spoken", reply, 4)
+                            _trace_audio("speaking: action clarification")
+                            await speak(reply)
+                            return
+                    except Exception as exc:
+                        log.debug(f"Reasoned action planning skipped: {exc}")
+                        action_plan = None
+
+                if action_plan and action_plan.get("mode") == "complex":
+                    from actions.complex_task import execute_complex
+
+                    goal = (action_plan.get("goal") or action_text).strip() or action_text
+                    action_result = await execute_complex(goal, context=hint, verify=True)
+                else:
+                    if action_plan and action_plan.get("action_request"):
+                        action_text = action_plan.get("action_request", action_text)
+                    action_result = await execute_action(action_text, context=hint)
+                if action_plan:
+                    try:
+                        from brain.execution_engine import finalize_reasoned_action
+
+                        await finalize_reasoned_action(
+                            action_plan,
+                            action_result,
+                            session_id=config.DEEP_REASONING_SESSION_ID,
+                        )
+                    except Exception as exc:
+                        log.debug(f"Reasoned action finalize skipped: {exc}")
                 reply = _compose_action_result_reply(action_result)
             else:
                 deep_reply = None
@@ -1340,7 +1386,48 @@ async def _execute_user_task(text: str) -> None:
         if intent == "action":
             bridge.state_changed.emit("acting")
             action_text = (decision.get("action_request") or "").strip() or text
-            result = await execute_action(action_text, context=hint)
+            action_plan = None
+            if config.DEEP_REASONING_ENABLED:
+                try:
+                    from brain.execution_engine import prepare_reasoned_action
+
+                    action_plan = await prepare_reasoned_action(
+                        action_text,
+                        context_hint=hint,
+                        session_id=config.DEEP_REASONING_SESSION_ID,
+                    )
+                    if action_plan.get("mode") == "clarify":
+                        out = (
+                            action_plan.get("clarifying_question")
+                            or "What exactly should I do?"
+                        )
+                        bridge.task_response.emit(out)
+                        bridge.toast_requested.emit(config.MARROW_NAME, out[:200], 4)
+                        return
+                except Exception as exc:
+                    log.debug(f"Reasoned text action planning skipped: {exc}")
+                    action_plan = None
+
+            if action_plan and action_plan.get("mode") == "complex":
+                from actions.complex_task import execute_complex
+
+                goal = (action_plan.get("goal") or action_text).strip() or action_text
+                result = await execute_complex(goal, context=hint, verify=True)
+            else:
+                if action_plan and action_plan.get("action_request"):
+                    action_text = action_plan.get("action_request", action_text)
+                result = await execute_action(action_text, context=hint)
+            if action_plan:
+                try:
+                    from brain.execution_engine import finalize_reasoned_action
+
+                    await finalize_reasoned_action(
+                        action_plan,
+                        result,
+                        session_id=config.DEEP_REASONING_SESSION_ID,
+                    )
+                except Exception as exc:
+                    log.debug(f"Reasoned text action finalize skipped: {exc}")
             out = _compose_action_result_reply(result)
         elif intent == "clarify":
             bridge.state_changed.emit("thinking")
@@ -1649,13 +1736,38 @@ def _run_qt() -> None:
 # ─── Entry point ───────────────────────────────────────────────────────────────
 
 
+def _run_headless() -> None:
+    """
+    Run marrow as a pure backend daemon (macOS/Linux with Swift UI, or Linux CLI).
+    Starts the API server + asyncio loops, no Qt.
+    The Swift macOS app connects to localhost:8888 for audio/chat/memories.
+    """
+    import platform as _platform
+    from server import start_server
+
+    log.info("Marrow starting in headless mode (platform: %s)", _platform.system())
+
+    # Start local API server for Swift frontend / CLI access
+    start_server()
+
+    # Run asyncio backend on the main thread
+    _run_asyncio_backend()
+
+
 def main() -> None:
     if _ensure_best_runtime():
         return
     _setup_logging()
-    # Qt must own the main thread on Windows.
-    # Backend starts from inside _run_qt once QApplication is alive.
-    _run_qt()
+
+    import platform as _platform
+    system = _platform.system()
+
+    if system == "Windows":
+        # Qt must own the main thread on Windows.
+        _run_qt()
+    else:
+        # macOS/Linux: run headless backend; Swift UI (macOS) or terminal connects separately.
+        _run_headless()
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ from typing import Any
 from actions.code_exec import code_run, eval_expression
 from actions.memory import memory_get_context
 from actions.web import web_search
+from brain.context_engine import build_reasoning_context
+from brain.decision_engine import analyze_decision
 from brain.llm import get_client
 from storage import db, state_store
 from ui.bridge import get_bridge
@@ -60,6 +62,7 @@ def _scratchpad_text(session: dict[str, Any]) -> str:
         f"Project: {session.get('project_brief', '')}",
         f"Domain: {session.get('domain', 'general')}",
         f"Task type: {session.get('task_type', 'analyze')}",
+        f"Active mode: {session.get('active_mode', 'analyze')}",
     ]
     for key in (
         "goals",
@@ -83,6 +86,16 @@ def _scratchpad_text(session: dict[str, Any]) -> str:
         if values:
             lines.append(f"{key.replace('_', ' ').title()}:")
             lines.extend(f"- {v}" for v in values)
+    recommendation = str(session.get("recommendation", "") or "").strip()
+    if recommendation:
+        lines.append(f"Recommendation: {recommendation[:220]}")
+    strategy = str(session.get("action_strategy", "") or "").strip()
+    if strategy:
+        lines.append(f"Action strategy: {strategy[:220]}")
+    success_criteria = _normalize_list(session.get("success_criteria", []), limit=5)
+    if success_criteria:
+        lines.append("Success Criteria:")
+        lines.extend(f"- {v}" for v in success_criteria)
     return "\n".join(lines)
 
 
@@ -100,6 +113,7 @@ def _emit_workbench(
         "project_brief": session.get("project_brief", ""),
         "domain": session.get("domain", "general"),
         "task_type": session.get("task_type", "analyze"),
+        "active_mode": session.get("active_mode", "analyze"),
         "goals": _normalize_list(session.get("goals", []), limit=4),
         "learning_goals": _normalize_list(session.get("learning_goals", []), limit=4),
         "assumptions": _normalize_list(session.get("assumptions", []), limit=4),
@@ -110,6 +124,12 @@ def _emit_workbench(
         "design_decisions": _normalize_list(session.get("design_decisions", []), limit=4),
         "experiments": _normalize_list(session.get("experiments", []), limit=4),
         "recommended_tools": _normalize_list(session.get("recommended_tools", []), limit=4),
+        "options": session.get("options", [])[:3],
+        "recommendation": session.get("recommendation", ""),
+        "decision_confidence": session.get("decision_confidence", 0.0),
+        "action_strategy": session.get("action_strategy", ""),
+        "success_criteria": _normalize_list(session.get("success_criteria", []), limit=4),
+        "execution_status": session.get("execution_status", {}),
         "open_questions": _normalize_list(session.get("open_questions", []), limit=4),
         "next_steps": _normalize_list(session.get("next_steps", []), limit=4),
         "verification_status": session.get("verification_status", {}),
@@ -120,6 +140,15 @@ def _emit_workbench(
         get_bridge().deep_reasoning_update.emit(json.dumps(payload))
     except Exception:
         pass
+
+
+def publish_reasoning_workbench(
+    session: dict[str, Any],
+    stage: str,
+    status: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    _emit_workbench(session, stage=stage, status=status, extra=extra)
 
 
 def _recent_history_text(session: dict[str, Any], limit: int = 8) -> str:
@@ -505,6 +534,7 @@ def _update_session_from_frame(
     session["project_brief"] = str(frame.get("project_brief", "") or session.get("project_brief", "")).strip()[:800]
     session["domain"] = str(frame.get("domain", "") or session.get("domain", "general")).strip().lower() or "general"
     session["task_type"] = str(frame.get("task_type", "") or session.get("task_type", "analyze")).strip().lower() or "analyze"
+    session["active_mode"] = "analyze"
     for key in (
         "goals",
         "learning_goals",
@@ -555,6 +585,7 @@ def _apply_reasoning_update(
         "concepts",
         "teaching_notes",
         "recommended_tools",
+        "success_criteria",
         "open_questions",
         "next_steps",
     ):
@@ -569,6 +600,12 @@ def _apply_reasoning_update(
     project_brief = str(update.get("project_brief", "") or "").strip()
     if project_brief:
         session["project_brief"] = project_brief[:800]
+    options = update.get("options")
+    if isinstance(options, list):
+        session["options"] = options[:4]
+    recommendation = str(update.get("recommendation", "") or "").strip()
+    if recommendation:
+        session["recommendation"] = recommendation[:220]
     history = session.get("history", [])
     if not isinstance(history, list):
         history = []
@@ -586,6 +623,7 @@ async def _synthesize_reasoning_reply(
     session: dict[str, Any],
     mode: dict[str, Any],
     support_material: str,
+    decision_data: dict[str, Any],
 ) -> dict[str, Any]:
     llm = get_client()
     scaffold = _domain_scaffold(session.get("domain", mode.get("domain", "general")), session.get("task_type", mode.get("task_type", "analyze")))
@@ -615,6 +653,8 @@ Return strict JSON only:
     "concepts": [],
     "teaching_notes": [],
     "recommended_tools": [],
+    "options": [],
+    "recommendation": "",
     "open_questions": [],
     "next_steps": []
   }}
@@ -637,6 +677,9 @@ Recent reasoning history:
 
 Current environment context:
 {(context_hint or "None")[:1600]}
+
+Decision analysis:
+{json.dumps(decision_data, ensure_ascii=False)[:1800]}
 
 Supporting material:
 {(support_material or "None")[:3200]}
@@ -740,7 +783,34 @@ async def maybe_handle_deep_reasoning(
             _emit_workbench(session, stage="clarify", status="awaiting_input")
             return question
 
-    support = await _gather_supporting_material(user_text, context_hint, session, mode)
+    selected = await build_reasoning_context(
+        user_text,
+        context_hint=context_hint,
+        session_id=session_id,
+    )
+    assembled_context = selected.get("assembled_context", "") or context_hint
+    _emit_workbench(
+        session,
+        stage="context",
+        status="active",
+        extra={"context_meta": selected.get("context_meta", {})},
+    )
+
+    decision_data = await analyze_decision(
+        user_text,
+        assembled_context=assembled_context,
+        domain=session.get("domain", mode.get("domain", "general")),
+        task_type=session.get("task_type", mode.get("task_type", "analyze")),
+    )
+    if decision_data.get("options"):
+        session["options"] = decision_data.get("options", [])[:4]
+    if decision_data.get("recommendation"):
+        session["recommendation"] = str(decision_data.get("recommendation", ""))[:220]
+    session["decision_confidence"] = float(decision_data.get("confidence", 0.0) or 0.0)
+    state_store.upsert_scratchpad_session(session_id, session)
+    _emit_workbench(session, stage="decision", status="active")
+
+    support = await _gather_supporting_material(user_text, assembled_context, session, mode)
     if support:
         _emit_workbench(
             session,
@@ -748,12 +818,19 @@ async def maybe_handle_deep_reasoning(
             status="active",
             extra={"support_material": support[:800]},
         )
-    draft = await _synthesize_reasoning_reply(user_text, context_hint, session, mode, support)
+    draft = await _synthesize_reasoning_reply(
+        user_text,
+        assembled_context,
+        session,
+        mode,
+        support,
+        decision_data,
+    )
     draft_answer = str(draft.get("answer", "") or "").strip()
     if not draft_answer:
         return None
 
-    verdict = await _verify_reasoning_reply(user_text, draft, context_hint, session)
+    verdict = await _verify_reasoning_reply(user_text, draft, assembled_context, session)
     session["verification_status"] = {
         "status": "approved" if verdict.get("approved") else "revised",
         "issues": verdict.get("issues", []),

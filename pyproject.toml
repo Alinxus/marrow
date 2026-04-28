@@ -30,11 +30,15 @@ dependencies = [
     "keyboard>=0.13.0",
     "pyautogui>=0.9.54",
     "deepgram-sdk>=3.0.0",
-    "kokoro-onnx>=0.5.0",
+    "kokoro-onnx>=0.5.0; python_version < '3.14'",
+    "kokoro-onnx>=0.4.7; python_version >= '3.14'",
     "langchain-anthropic>=0.3.0",
     "firecrawl-py>=1.0.0",
     "openai>=1.40.0",
-    "PyQt6>=6.6.0",
+    "PyQt6>=6.6.0; platform_system == 'Windows'",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "websockets>=12.0",
 ]
 
 [project.scripts]

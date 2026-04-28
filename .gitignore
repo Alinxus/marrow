@@ -1,5 +1,10 @@
 .env
 .env.example
 node_modules/
-_pycache__/
+__pycache__/
+*.pyc
+*.pyo
 dist/
+.venv/
+*.egg-info/
+.DS_Store

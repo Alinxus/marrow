@@ -28,67 +28,136 @@ It continuously ingests screen context, maintains memory, reasons in the backgro
 
 ## Quick Start
 
-### Windows (PowerShell)
+Marrow starts without any API key. The server boots, memory and conversations work, but chat replies need at least one LLM key. Set `OPENAI_API_KEY` for the cheapest path — or `ANTHROPIC_API_KEY` if you have one.
+
+### Step 1 — create your env file
+
+```
+~/.marrow/.env          ← recommended (works on all platforms)
+omi/marrow/.env         ← fallback (project root)
+```
+
+Minimum to get chat working:
+
+```env
+OPENAI_API_KEY=sk-...your key here...
+```
+
+Full options → see `.env.example` in this folder.
+
+---
+
+### Windows
 
 ```powershell
-cd C:\Users\user\Downloads\omi\marrow
+# 1. Install dependencies (one-time)
+cd C:\path\to\omi
+python -m venv .venv
+.venv\Scripts\pip install fastapi uvicorn httpx python-dotenv
+.venv\Scripts\pip install -e marrow
 
-py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
+# 2. Create env file
+mkdir %USERPROFILE%\.marrow
+copy marrow\.env.example %USERPROFILE%\.marrow\.env
+notepad %USERPROFILE%\.marrow\.env    # add OPENAI_API_KEY
 
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e .
+# 3. Smoke-test the server (no UI required)
+cd marrow
+..\\.venv\\Scripts\\python test_server.py
 
-copy .env.example .env
-python main.py
+# 4. Run the full app (Windows system tray UI)
+..\\.venv\\Scripts\\python main.py
 ```
 
-### macOS / Linux
+Audio note: if microphone fails on startup set `AUDIO_INPUT_DEVICE=<index>` or `AUDIO_ENABLED=0` in your `.env`.
+
+---
+
+### macOS
 
 ```bash
-cd ~/Downloads/omi/marrow
-
-python3.11 -m venv .venv
-source .venv/bin/activate
-
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e .
-
-cp .env.example .env
-python main.py
-```
-
-Optional on macOS:
-
-```bash
+# 1. Install system deps (one-time)
 brew install portaudio ffmpeg
+
+# 2. Install Python deps
+cd /path/to/omi
+python3 -m venv .venv
+.venv/bin/pip install fastapi uvicorn httpx python-dotenv
+.venv/bin/pip install -e marrow
+
+# 3. Create env file
+mkdir -p ~/.marrow
+cp marrow/.env.example ~/.marrow/.env
+nano ~/.marrow/.env    # add OPENAI_API_KEY
+
+# 4. Smoke-test the server
+cd marrow
+../.venv/bin/python test_server.py
+
+# 5a. Run the Python backend only
+../.venv/bin/python main.py
+
+# 5b. Or run with the Swift macOS UI (requires Xcode)
+#     Open marrow/desktop/Marrow.xcodeproj → Run
+#     Backend starts automatically when the app launches
 ```
 
-## First 5-Minute Smoke Test
+macOS permissions needed on first run: Microphone, Screen Recording, Accessibility.
+Go to System Settings → Privacy & Security to grant them.
 
-Use this right after `python main.py` to verify the runtime quickly.
+---
 
-1. Confirm startup loops in logs:
-   - `Screen capture loop started`
-   - `Reasoning loop started`
-   - `Proactive intelligence loop started`
-2. Confirm provider/model:
-   - startup line with `Provider` and `Reasoning`
-   - `/models` returns expected provider/model values
-3. Confirm context capture:
-   - switch between 2-3 apps/tabs
-   - wait 30-90s for proactive pulse or insight
-4. Confirm conversation path:
-   - trigger wake/hotkey and ask one question
-   - expect one spoken + one visual surface (no duplicate)
-5. Confirm control commands:
-   - run `/doctor`
-   - run `/conversation status`
-   - run `/proactive status`
+### Linux
 
-Expected outcome:
+```bash
+# 1. Install system deps (one-time, Ubuntu/Debian)
+sudo apt install python3-dev portaudio19-dev ffmpeg xdotool
 
-- Marrow should capture screen context continuously, reason periodically, and produce occasional proactive output without requiring manual `/conversation on` or `/proactive talkative`.
+# 2. Install Python deps
+cd /path/to/omi
+python3 -m venv .venv
+.venv/bin/pip install fastapi uvicorn httpx python-dotenv
+.venv/bin/pip install -e marrow
+
+# 3. Create env file
+mkdir -p ~/.marrow
+cp marrow/.env.example ~/.marrow/.env
+nano ~/.marrow/.env    # add OPENAI_API_KEY
+
+# 4. Add yourself to audio/input groups (one-time, then log out/in)
+sudo usermod -aG audio,input $USER
+
+# 5. Smoke-test the server
+cd marrow
+../.venv/bin/python test_server.py
+
+# 6. Run the full app
+../.venv/bin/python main.py
+```
+
+---
+
+### Smoke Test (all platforms)
+
+```bash
+cd marrow
+python test_server.py
+```
+
+Expected: `9/9 checks passed`. If chat shows `FAIL` your LLM key is missing or wrong — everything else still works.
+
+What each check means:
+
+| Check | What it verifies |
+|---|---|
+| `/v1/me` | Server is up, identity works |
+| `/v1/conversations` | SQLite database is live |
+| `/v1/memories` | Memory read/write works |
+| `/v1/config/api-keys` | Key distribution to macOS UI works |
+| `/v1/users/me/subscription` | Subscription stub (always active) |
+| `POST /v1/chat/messages` | LLM routing works end-to-end |
+| `/v2/desktop/appcast.xml` | Sparkle update stub works |
+| `/v99/whatever` | Catch-all handles unknown routes |
 
 ## System Diagram
 

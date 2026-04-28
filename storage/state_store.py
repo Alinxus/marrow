@@ -16,6 +16,7 @@ TWIN_FILE = STATE_DIR / "twin.json"
 GRAPH_FILE = STATE_DIR / "graph.json"
 SKILLS_FILE = STATE_DIR / "skills.json"
 SCRATCHPAD_FILE = STATE_DIR / "scratchpad.json"
+OPERATOR_FILE = STATE_DIR / "operator_profile.json"
 
 _LOCK = threading.RLock()
 
@@ -28,6 +29,8 @@ def _default_payload(kind: str) -> dict[str, Any]:
         key = "timeline"
     elif kind == "scratchpad":
         key = "sessions"
+    elif kind == "operator_profile":
+        key = "profile"
     return {
         "schema_version": STATE_VERSION,
         "kind": kind,
@@ -82,6 +85,9 @@ def init_state_store() -> None:
     scratchpad = _read_json(SCRATCHPAD_FILE, "scratchpad")
     scratchpad.setdefault("sessions", {})
     _write_json(SCRATCHPAD_FILE, "scratchpad", scratchpad)
+    profile = _read_json(OPERATOR_FILE, "operator_profile")
+    profile.setdefault("profile", {})
+    _write_json(OPERATOR_FILE, "operator_profile", profile)
 
 
 def load_missions() -> dict[str, Any]:
@@ -190,6 +196,7 @@ def get_scratchpad_session(session_id: str = "default") -> dict[str, Any]:
             "project_brief": "",
             "domain": "general",
             "task_type": "analyze",
+            "active_mode": "analyze",
             "goals": [],
             "learning_goals": [],
             "constraints": [],
@@ -207,6 +214,19 @@ def get_scratchpad_session(session_id: str = "default") -> dict[str, Any]:
             "open_questions": [],
             "next_steps": [],
             "recommended_tools": [],
+            "options": [],
+            "recommendation": "",
+            "decision_confidence": 0.0,
+            "action_strategy": "",
+            "success_criteria": [],
+            "execution_status": {
+                "status": "idle",
+                "mode": "",
+                "goal": "",
+                "checks": [],
+                "risks": [],
+                "summary": "",
+            },
             "verification_status": {"status": "not_run", "issues": [], "checks": []},
             "last_user_turn": "",
             "last_assistant_turn": "",
@@ -237,3 +257,50 @@ def clear_scratchpad_session(session_id: str = "default") -> dict[str, Any]:
     sessions.pop(session_id, None)
     save_scratchpad(payload)
     return get_scratchpad_session(session_id)
+
+
+def load_operator_profile() -> dict[str, Any]:
+    payload = _read_json(OPERATOR_FILE, "operator_profile")
+    payload.setdefault("profile", {})
+    return payload
+
+
+def save_operator_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    payload.setdefault("profile", {})
+    return _write_json(OPERATOR_FILE, "operator_profile", payload)
+
+
+def get_operator_profile() -> dict[str, Any]:
+    payload = load_operator_profile()
+    profile = payload.get("profile")
+    if not isinstance(profile, dict):
+        profile = {}
+    if not profile:
+        profile = {
+            "initiative_style": "balanced",
+            "initiative_tolerance": 3,
+            "teaching_depth": "balanced",
+            "challenge_preference": "balanced",
+            "execution_agency": "high",
+            "adaptation_signals": {
+                "engagement_score": 0.5,
+                "recent_interruptions": 0,
+                "recent_actions": 0,
+                "recent_conversations": 0,
+            },
+            "updated_at": time.time(),
+        }
+        payload["profile"] = profile
+        save_operator_profile(payload)
+    return profile
+
+
+def update_operator_profile(updates: dict[str, Any]) -> dict[str, Any]:
+    payload = load_operator_profile()
+    profile = get_operator_profile().copy()
+    for key, value in (updates or {}).items():
+        profile[key] = value
+    profile["updated_at"] = time.time()
+    payload["profile"] = profile
+    save_operator_profile(payload)
+    return profile

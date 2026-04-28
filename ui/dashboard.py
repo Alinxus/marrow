@@ -653,6 +653,8 @@ class WorkbenchSection(QWidget):
         assumptions = payload.get("assumptions") or []
         blockers = payload.get("blockers") or []
         next_steps = payload.get("next_steps") or []
+        success_criteria = payload.get("success_criteria") or []
+        execution = payload.get("execution_status") or {}
         verification = payload.get("verification_status") or {}
 
         self._title.setText(title[:140] if title else "Deep reasoning active")
@@ -665,6 +667,8 @@ class WorkbenchSection(QWidget):
             parts.append("blockers: " + "; ".join(str(x)[:50] for x in blockers[:2]))
         if next_steps:
             parts.append("next: " + "; ".join(str(x)[:50] for x in next_steps[:2]))
+        if success_criteria:
+            parts.append("done when: " + "; ".join(str(x)[:50] for x in success_criteria[:2]))
         self._summary.setText(" · ".join(parts[:3]))
 
         verify_line = verification.get("status", "")

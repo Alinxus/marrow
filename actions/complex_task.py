@@ -15,11 +15,12 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Optional
 from dataclasses import dataclass, field
+from typing import Any, Optional
 
 import config
 from actions import executor, browser, web, file_tools, system
+from brain.digital_twin import add_task_signal
 
 log = logging.getLogger(__name__)
 
@@ -83,10 +84,50 @@ class ComplexTaskExecutor:
 
         log.info(f"Complex task: {goal[:80]}")
 
-        # Step 1: Create plan
-        plan = await self._create_plan(goal, context)
+        add_task_signal(goal[:140], "running")
+        attempts: list[tuple[list[PlanStep], int, bool]] = []
+        current_goal = goal
+        current_context = context
 
-        if not plan:
+        for attempt in range(self.max_retries + 1):
+            plan = await self._create_plan(current_goal, current_context)
+            if not plan:
+                continue
+
+            log.info(f"Created plan with {len(plan)} steps (attempt {attempt + 1})")
+            steps_failed = await self._execute_plan(plan, current_context)
+            verification_passed = True
+            if verify and steps_failed == 0:
+                verification_passed = await self._verify_goal(current_goal, plan, current_context)
+            attempts.append((plan, steps_failed, verification_passed))
+
+            if steps_failed == 0 and verification_passed:
+                success = True
+                summary = self._generate_summary(plan, verification_passed)
+                add_task_signal(goal[:140], "completed")
+                return ExecutionResult(
+                    success=success,
+                    summary=summary,
+                    steps_executed=len([s for s in plan if s.executed]),
+                    steps_failed=steps_failed,
+                    total_steps=len(plan),
+                    execution_time=time.time() - start_time,
+                    verification_passed=verification_passed,
+                )
+
+            if attempt >= self.max_retries:
+                break
+
+            recovery = await self._repair_plan(current_goal, current_context, plan, steps_failed, verification_passed)
+            revised_goal = str(recovery.get("revised_goal", "") or "").strip()
+            revised_context = str(recovery.get("revised_context", "") or "").strip()
+            if revised_goal:
+                current_goal = revised_goal
+            if revised_context:
+                current_context = revised_context
+
+        if not attempts:
+            add_task_signal(goal[:140], "failed")
             return ExecutionResult(
                 success=False,
                 summary="Could not create a plan for this task",
@@ -97,30 +138,16 @@ class ComplexTaskExecutor:
                 verification_passed=False,
             )
 
-        log.info(f"Created plan with {len(plan)} steps")
-
-        # Step 2: Execute plan
-        steps_failed = await self._execute_plan(plan, context)
-        steps_executed = len([s for s in plan if s.executed])
-
-        # Step 3: Verify if needed
-        verification_passed = True
-        if verify and steps_failed == 0:
-            verification_passed = await self._verify_goal(goal, plan, context)
-
-        # Step 4: Summarize
-        success = steps_failed == 0 and verification_passed
-
-        summary = self._generate_summary(plan, verification_passed)
-
+        last_plan, last_failed, last_verified = attempts[-1]
+        add_task_signal(goal[:140], "failed")
         return ExecutionResult(
-            success=success,
-            summary=summary,
-            steps_executed=steps_executed,
-            steps_failed=steps_failed,
-            total_steps=len(plan),
+            success=False,
+            summary=self._generate_summary(last_plan, last_verified),
+            steps_executed=len([s for s in last_plan if s.executed]),
+            steps_failed=last_failed,
+            total_steps=len(last_plan),
             execution_time=time.time() - start_time,
-            verification_passed=verification_passed,
+            verification_passed=last_verified,
         )
 
     async def _create_plan(self, goal: str, context: str) -> list[PlanStep]:
@@ -387,6 +414,57 @@ Only output the JSON array, nothing else."""
                     tool_input.get("code", ""),
                 )
 
+            elif tool_name == "communications_brief":
+                return await executor._async_handle_tool_call("communications_brief", {}, context)
+
+            elif tool_name == "document_task":
+                return await executor._async_handle_tool_call("document_task", tool_input, context)
+
+            elif tool_name == "browser_research":
+                return await executor._async_handle_tool_call("browser_research", tool_input, context)
+
+            elif tool_name == "browser_open_tab":
+                return await executor._async_handle_tool_call("browser_open_tab", tool_input, context)
+
+            elif tool_name == "browser_switch_tab":
+                return await executor._async_handle_tool_call("browser_switch_tab", tool_input, context)
+
+            elif tool_name == "browser_list_tabs":
+                return await executor._async_handle_tool_call("browser_list_tabs", {}, context)
+
+            elif tool_name == "browser_session_state":
+                return await executor._async_handle_tool_call("browser_session_state", {}, context)
+
+            elif tool_name == "computer_workflow":
+                return await executor._async_handle_tool_call("computer_workflow", tool_input, context)
+
+            elif tool_name == "project_workflow":
+                return await executor._async_handle_tool_call("project_workflow", tool_input, context)
+
+            elif tool_name == "personal_workflow":
+                return await executor._async_handle_tool_call("personal_workflow", tool_input, context)
+
+            elif tool_name == "verify_workspace_state":
+                return await executor._async_handle_tool_call("verify_workspace_state", tool_input, context)
+
+            elif tool_name == "email_draft":
+                return await executor._async_handle_tool_call("email_draft", tool_input, context)
+
+            elif tool_name == "email_send":
+                return await executor._async_handle_tool_call("email_send", tool_input, context)
+
+            elif tool_name == "calendar_create_event":
+                return await executor._async_handle_tool_call("calendar_create_event", tool_input, context)
+
+            elif tool_name == "followup_add":
+                return await executor._async_handle_tool_call("followup_add", tool_input, context)
+
+            elif tool_name == "capture_workspace_checkpoint":
+                return await executor._async_handle_tool_call("capture_workspace_checkpoint", tool_input, context)
+
+            elif tool_name == "compare_workspace_checkpoints":
+                return await executor._async_handle_tool_call("compare_workspace_checkpoints", tool_input, context)
+
             else:
                 # Fallback: describe the step and let the full executor handle it
                 task = f"{tool_name}: {json.dumps(tool_input)}"
@@ -442,6 +520,72 @@ If NO, what would need to be done differently?"""
         except Exception as e:
             log.warning(f"Verification failed: {e}")
             return True  # Assume success if verification fails
+
+    async def _repair_plan(
+        self,
+        goal: str,
+        context: str,
+        plan: list[PlanStep],
+        steps_failed: int,
+        verification_passed: bool,
+    ) -> dict[str, str]:
+        """Ask the model how to recover when the first execution path underdelivers."""
+        from brain.llm import get_client
+
+        llm = get_client()
+        executed = []
+        for step in plan:
+            if step.executed:
+                executed.append(
+                    {
+                        "step": step.step_id,
+                        "description": step.description,
+                        "tool": step.tool,
+                        "result": str(step.result)[:220],
+                    }
+                )
+
+        prompt = f"""A complex task execution did not fully succeed. Produce a recovery brief.
+
+Return strict JSON only:
+{{
+  "revised_goal": "",
+  "revised_context": ""
+}}
+
+Goal:
+{goal}
+
+Original context:
+{context}
+
+Execution summary:
+steps_failed={steps_failed}
+verification_passed={verification_passed}
+executed={json.dumps(executed, ensure_ascii=False)[:2400]}
+
+If possible, revise the goal/context to make the next plan more world-aware, concrete, and recoverable.
+Do not just repeat the original wording.
+"""
+        try:
+            response = await llm.create(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=260,
+                model_type=self.planning_model,
+            )
+            raw = response.text.strip()
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start == -1 or end == 0:
+                return {}
+            data = json.loads(raw[start:end])
+            return {
+                "revised_goal": str(data.get("revised_goal", "") or "").strip()[:700],
+                "revised_context": str(data.get("revised_context", "") or "").strip()[:1600],
+            }
+        except Exception as e:
+            log.debug(f"Repair planning failed: {e}")
+            return {}
 
     def _generate_summary(self, plan: list[PlanStep], verified: bool) -> str:
         """Generate a human-readable summary."""

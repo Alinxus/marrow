@@ -251,6 +251,34 @@ MARROW_TOOLS = [
         },
     },
     {
+        "name": "browser_open_tab",
+        "description": "Open a new tracked browser tab to a URL.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "URL to open in a new tab"}},
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser_switch_tab",
+        "description": "Switch to a tracked browser tab by index.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"index": {"type": "integer", "description": "Tracked tab index"}},
+            "required": ["index"],
+        },
+    },
+    {
+        "name": "browser_list_tabs",
+        "description": "List tracked browser tabs in the persistent browser session.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "browser_session_state",
+        "description": "Show current browser session state, tracked tabs, and recent actions.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "clipboard_read",
         "description": "Read the system clipboard.",
         "input_schema": {
@@ -1210,6 +1238,165 @@ MARROW_TOOLS = [
             },
         },
     },
+    {
+        "name": "communications_brief",
+        "description": "Bundle email, calendar, reminders, and pending tasks into one operator summary.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "document_task",
+        "description": "High-level document workflow for reading, summarizing, creating, writing, or appending PDFs, docs, spreadsheets, and text files.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "description": "read, summarize, write, create, or append"},
+                "path": {"type": "string", "description": "Document path"},
+                "content": {"type": "string", "description": "Content for write/create/append"},
+                "sheet": {"type": "string", "description": "Optional spreadsheet sheet"},
+                "page": {"type": "integer", "description": "Optional PDF page number"},
+            },
+            "required": ["operation", "path"],
+        },
+    },
+    {
+        "name": "browser_research",
+        "description": "Run a higher-level browser or research workflow across search and extraction.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "What you are trying to learn or accomplish"},
+                "query": {"type": "string", "description": "Optional search query"},
+                "url": {"type": "string", "description": "Optional URL to inspect"},
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "computer_workflow",
+        "description": "Higher-level desktop/computer operator workflow for setup, installs, env/config work, and automation checks.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "What should be accomplished"},
+                "command": {"type": "string", "description": "Optional PowerShell command to run"},
+                "app_name": {"type": "string", "description": "Optional app/process to verify"},
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "project_workflow",
+        "description": "Higher-level project operator workflow for repo status, issue/PR/CI/deploy context, and project checks.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Project task or question"},
+                "repo_path": {"type": "string", "description": "Optional repository path"},
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "personal_workflow",
+        "description": "Personal operator workflow for errands, travel, shopping, subscriptions, and household coordination.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "description": "shopping, errands, travel, household, or other"},
+                "detail": {"type": "string", "description": "What should be tracked or coordinated"},
+            },
+            "required": ["kind"],
+        },
+    },
+    {
+        "name": "verify_workspace_state",
+        "description": "Check current desktop/web world state against an expectation using the twin and recent screen context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "expectation": {"type": "string", "description": "What should be true right now"},
+            },
+        },
+    },
+    {
+        "name": "email_draft",
+        "description": "Create a real Outlook email draft.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recipient": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+            },
+            "required": ["recipient", "subject", "body"],
+        },
+    },
+    {
+        "name": "email_send",
+        "description": "Send a real Outlook email immediately.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recipient": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+            },
+            "required": ["recipient", "subject", "body"],
+        },
+    },
+    {
+        "name": "calendar_create_event",
+        "description": "Create a real Outlook calendar event.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start_iso": {"type": "string"},
+                "end_iso": {"type": "string"},
+                "location": {"type": "string"},
+                "body": {"type": "string"},
+            },
+            "required": ["title", "start_iso", "end_iso"],
+        },
+    },
+    {
+        "name": "followup_add",
+        "description": "Create a follow-up task and reminder for a contact or thread.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contact": {"type": "string"},
+                "topic": {"type": "string"},
+                "when_seconds": {"type": "integer"},
+            },
+            "required": ["contact"],
+        },
+    },
+    {
+        "name": "capture_workspace_checkpoint",
+        "description": "Capture a named before/after workspace checkpoint for verification.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "expectation": {"type": "string"},
+            },
+            "required": ["label"],
+        },
+    },
+    {
+        "name": "compare_workspace_checkpoints",
+        "description": "Compare two named workspace checkpoints against an expectation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "before_label": {"type": "string"},
+                "after_label": {"type": "string"},
+                "expectation": {"type": "string"},
+            },
+            "required": ["before_label", "after_label"],
+        },
+    },
 ]
 
 
@@ -1753,6 +1940,18 @@ async def _async_handle_tool_call(
         query = tool_input["query"]
         return await browser.browser_search(query)
 
+    elif tool_name == "browser_open_tab":
+        return await browser.browser_open_tab(tool_input["url"])
+
+    elif tool_name == "browser_switch_tab":
+        return await browser.browser_switch_tab(int(tool_input["index"]))
+
+    elif tool_name == "browser_list_tabs":
+        return await browser.browser_list_tabs()
+
+    elif tool_name == "browser_session_state":
+        return await browser.browser_session_state()
+
     elif tool_name == "clipboard_read":
         return await system.clipboard_read()
 
@@ -2139,6 +2338,124 @@ async def _async_handle_tool_call(
         days = int(tool_input.get("days", 1))
         return _get_calendar(days)
 
+    elif tool_name == "email_draft":
+        from actions import communications as comms_mod
+
+        return await comms_mod.email_draft(
+            tool_input["recipient"],
+            tool_input["subject"],
+            tool_input["body"],
+            run_command=_terminal_exec,
+        )
+
+    elif tool_name == "email_send":
+        from actions import communications as comms_mod
+
+        return await comms_mod.email_send(
+            tool_input["recipient"],
+            tool_input["subject"],
+            tool_input["body"],
+            run_command=_terminal_exec,
+        )
+
+    elif tool_name == "calendar_create_event":
+        from actions import communications as comms_mod
+
+        return await comms_mod.calendar_create_event(
+            tool_input["title"],
+            tool_input["start_iso"],
+            tool_input["end_iso"],
+            location=tool_input.get("location", ""),
+            body=tool_input.get("body", ""),
+            run_command=_terminal_exec,
+        )
+
+    elif tool_name == "followup_add":
+        from actions import communications as comms_mod
+
+        return await comms_mod.followup_add(
+            tool_input["contact"],
+            tool_input.get("topic", ""),
+            int(tool_input.get("when_seconds", 86400)),
+        )
+
+    elif tool_name == "capture_workspace_checkpoint":
+        from actions import verification as verify_mod
+
+        snap = verify_mod.capture_checkpoint(
+            tool_input["label"],
+            tool_input.get("expectation", ""),
+        )
+        return f"[checkpoint] {snap.get('label', '')} captured"
+
+    elif tool_name == "compare_workspace_checkpoints":
+        from actions import verification as verify_mod
+
+        return verify_mod.compare_checkpoints(
+            tool_input["before_label"],
+            tool_input["after_label"],
+            tool_input.get("expectation", ""),
+        )
+
+    elif tool_name == "communications_brief":
+        from actions import operator_ops as ops_mod
+
+        return await ops_mod.communications_brief(_get_emails, _get_calendar)
+
+    elif tool_name == "document_task":
+        from actions import operator_ops as ops_mod
+
+        return await ops_mod.document_task(
+            tool_input["operation"],
+            tool_input["path"],
+            content=tool_input.get("content", ""),
+            sheet=tool_input.get("sheet", ""),
+            page=tool_input.get("page"),
+        )
+
+    elif tool_name == "browser_research":
+        from actions import operator_ops as ops_mod
+
+        return await ops_mod.browser_research(
+            tool_input["goal"],
+            query=tool_input.get("query", ""),
+            url=tool_input.get("url", ""),
+        )
+
+    elif tool_name == "computer_workflow":
+        from actions import operator_ops as ops_mod
+
+        return await ops_mod.computer_workflow(
+            tool_input["goal"],
+            command=tool_input.get("command", ""),
+            app_name=tool_input.get("app_name", ""),
+            run_command=_terminal_exec,
+        )
+
+    elif tool_name == "project_workflow":
+        from actions import operator_ops as ops_mod
+
+        return await ops_mod.project_workflow(
+            tool_input["goal"],
+            repo_path=tool_input.get("repo_path", ""),
+            run_command=_terminal_exec,
+        )
+
+    elif tool_name == "personal_workflow":
+        from actions import operator_ops as ops_mod
+
+        return await ops_mod.personal_workflow(
+            tool_input["kind"],
+            tool_input.get("detail", ""),
+        )
+
+    elif tool_name == "verify_workspace_state":
+        from actions import operator_ops as ops_mod
+
+        return await ops_mod.verify_workspace_state(
+            tool_input.get("expectation", "")
+        )
+
     # Approval
     elif tool_name == "set_approval_mode":
         from actions import approval as approval_mod
@@ -2372,6 +2689,59 @@ async def _maybe_swarm_boost(task: str, context: str) -> str:
         return ""
 
 
+async def _repair_direct_execution(
+    llm,
+    task: str,
+    context: str,
+    result_text: str,
+) -> str:
+    try:
+        from brain.context_engine import build_reasoning_context
+    except Exception:
+        return ""
+
+    selected = await build_reasoning_context(
+        task,
+        context_hint=context,
+        session_id=getattr(config, "DEEP_REASONING_SESSION_ID", "default"),
+    )
+    assembled = selected.get("assembled_context", "") or context
+    prompt = f"""A direct action attempt underdelivered. Produce a tighter retry brief.
+
+Return strict JSON only:
+{{
+  "retry": true|false,
+  "revised_task": "",
+  "reason": ""
+}}
+
+Retry only if a sharper second pass is likely to help.
+
+Original task:
+{task}
+
+Context:
+{assembled[:3500]}
+
+Current result:
+{(result_text or "")[:2500]}
+"""
+    response = await llm.create(
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=220,
+        model_type="scoring",
+    )
+    raw = (response.text or "").strip()
+    start = raw.find("{")
+    end = raw.rfind("}") + 1
+    if start == -1 or end == 0:
+        return ""
+    data = json.loads(raw[start:end])
+    if not bool(data.get("retry")):
+        return ""
+    return str(data.get("revised_task", "") or "").strip()[:700]
+
+
 async def execute_action(task: str, context: str = "") -> str:
     """
     Run the LLM with all Marrow tools to complete a task.
@@ -2381,6 +2751,7 @@ async def execute_action(task: str, context: str = "") -> str:
     from brain.llm import get_client
     from actions import memory as memory_mod
     from actions import adapters as adapters_mod
+    from actions import verification as verify_mod
 
     llm = get_client()
 
@@ -2459,6 +2830,9 @@ async def execute_action(task: str, context: str = "") -> str:
     _emit_execution_status(
         "start", f"Executing: {resolved_task[:120]}", confidence=0.74
     )
+    before_label = f"direct_before_{int(__import__('time').time() * 1000)}"
+    after_label = before_label.replace("before", "after")
+    verify_mod.capture_checkpoint(before_label, resolved_task[:220])
     asyncio.create_task(
         memory_mod.memory_record_conversation("user", task, "action_request")
     )
@@ -2507,6 +2881,48 @@ async def execute_action(task: str, context: str = "") -> str:
         )
         if incomplete:
             try:
+                revised_task = await _repair_direct_execution(
+                    llm,
+                    resolved_task,
+                    context,
+                    final_text or "",
+                )
+                if revised_task and revised_task.lower() != resolved_task.lower():
+                    _emit_execution_status(
+                        "repair",
+                        "Retrying direct execution with revised brief",
+                        confidence=0.67,
+                    )
+                    retry_content = (
+                        f"{revised_task}\n\nContext:\n{context}{recent_chat_context}{memory_context}{observed_history_context}{capability_context}{swarm_context}"
+                        if context
+                        else f"{revised_task}{recent_chat_context}{memory_context}{observed_history_context}{capability_context}{swarm_context}"
+                    )
+                    retry_content += adapter_hint
+                    repaired = await llm.create_with_tools(
+                        messages=[{"role": "user", "content": retry_content}],
+                        tools=toolset,
+                        tool_handler=_tool_handler,
+                        system=ACTION_SYSTEM_PROMPT,
+                        max_tokens=1024,
+                        model_type="reasoning",
+                        max_iterations=MAX_ITERATIONS,
+                        on_tool_call=_on_tool_call,
+                    )
+                    if repaired:
+                        final_text = repaired
+                        low = final_text.lower()
+                        incomplete = (
+                            (not final_text)
+                            or "max iterations reached" in low
+                            or "[unknown tool" in low
+                            or "[error" in low
+                            or "unavailable" in low
+                        )
+            except Exception as e:
+                log.debug(f"Direct execution repair skipped: {e}")
+        if incomplete:
+            try:
                 from actions import complex_task as ct_mod
 
                 _emit_execution_status(
@@ -2522,6 +2938,23 @@ async def execute_action(task: str, context: str = "") -> str:
                 )
             except Exception as e:
                 log.debug(f"Auto complex escalation skipped: {e}")
+
+    verify_mod.capture_checkpoint(after_label, resolved_task[:220])
+    verification_summary = verify_mod.compare_checkpoints(
+        before_label,
+        after_label,
+        resolved_task[:220],
+    )
+    rollback_hint = verify_mod.rollback_hint(
+        resolved_task,
+        final_text or "",
+        before_label,
+        after_label,
+    )
+    if verification_summary:
+        final_text = (final_text or "Done.") + "\n\n[Verification]\n" + verification_summary
+    if rollback_hint:
+        final_text = (final_text or "Done.") + "\n\n" + rollback_hint
 
     # Auto-learn: suggest adapter for repeated workflows
     if config.ADAPTER_AUTO_LEARN:

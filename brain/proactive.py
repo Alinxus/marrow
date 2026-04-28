@@ -308,8 +308,18 @@ def _detect_stuckness(shots: list[dict]) -> dict:
 
 
 def _mentor_style_instruction() -> str:
-    style = str(getattr(config, "LIVE_WORK_MENTOR_STYLE", "balanced") or "balanced").lower()
-    tolerance = max(1, min(5, int(getattr(config, "LIVE_WORK_MENTOR_TOLERANCE", 3) or 3)))
+    try:
+        from brain.operator_profile import infer_operator_profile
+
+        profile = infer_operator_profile()
+        style = str(profile.get("initiative_style", getattr(config, "LIVE_WORK_MENTOR_STYLE", "balanced")) or "balanced").lower()
+        tolerance = max(1, min(5, int(profile.get("initiative_tolerance", getattr(config, "LIVE_WORK_MENTOR_TOLERANCE", 3)) or 3)))
+        signals = profile.get("adaptation_signals") or {}
+        engagement = float(signals.get("engagement_score", 0.5) or 0.5)
+    except Exception:
+        style = str(getattr(config, "LIVE_WORK_MENTOR_STYLE", "balanced") or "balanced").lower()
+        tolerance = max(1, min(5, int(getattr(config, "LIVE_WORK_MENTOR_TOLERANCE", 3) or 3)))
+        engagement = 0.5
     tone = {
         "quiet": "Speak rarely. Only interrupt for high-signal guidance.",
         "balanced": "Speak when there is a concrete edge, not for narration.",
@@ -322,7 +332,7 @@ def _mentor_style_instruction() -> str:
         4: "User tolerance is high: interrupt when you can materially help.",
         5: "User tolerance is very high: bias toward frequent high-signal coaching.",
     }[tolerance]
-    return f"{tone} {tol_text}"
+    return f"{tone} {tol_text} Current engagement estimate is {engagement:.2f}; adapt accordingly."
 
 
 def _emit_toast(title: str, body: str, urgency: int = 3) -> None:
@@ -480,8 +490,30 @@ async def _surface_signal(
     kind: str = "proactive",
 ) -> None:
     title = title or _marrow_name()
+    try:
+        db.insert_proactive_decision(
+            lane=kind,
+            stage="candidate",
+            status="considered",
+            reason=body[:180],
+            payload=title[:120],
+            score=float(urgency),
+        )
+    except Exception:
+        pass
     if not _should_emit_signal(kind, body, urgency):
         log.debug(f"Proactive signal deduped: kind={kind} urgency={urgency}")
+        try:
+            db.insert_proactive_decision(
+                lane=kind,
+                stage="gate",
+                status="deduped",
+                reason=body[:180],
+                payload=title[:120],
+                score=float(urgency),
+            )
+        except Exception:
+            pass
         return
 
     # Omi-like ambient ladder: overlay pulse -> toast -> speech
@@ -495,6 +527,17 @@ async def _surface_signal(
     )
     if urgency >= toast_threshold or (audio_unavailable and force_toast):
         _emit_toast(title, body, urgency)
+    try:
+        db.insert_proactive_decision(
+            lane=kind,
+            stage="surface",
+            status="toast",
+            reason=body[:180],
+            payload=title[:120],
+            score=float(urgency),
+        )
+    except Exception:
+        pass
 
     auto_min = int(getattr(config, "PROACTIVE_AUTO_SPEAK_MIN_URGENCY", 2))
     should_speak = speak_now or urgency >= auto_min
@@ -504,6 +547,17 @@ async def _surface_signal(
             from voice.speak import speak
 
             await speak(body)
+            try:
+                db.insert_proactive_decision(
+                    lane=kind,
+                    stage="surface",
+                    status="spoken",
+                    reason=body[:180],
+                    payload=title[:120],
+                    score=float(urgency),
+                )
+            except Exception:
+                pass
         except Exception as e:
             log.debug(f"Proactive speech failed: {e}")
 
@@ -1309,6 +1363,7 @@ async def _check_live_work_mentor() -> None:
     try:
         from brain.deep_reasoning import get_scratchpad_summary
         from brain.llm import get_client
+        from brain.operator_profile import infer_operator_profile
     except Exception:
         return
 
@@ -1354,6 +1409,7 @@ async def _check_live_work_mentor() -> None:
     llm = get_client()
     if llm.provider == "none":
         return
+    profile = infer_operator_profile()
 
     scratchpad = ""
     try:
@@ -1383,6 +1439,9 @@ Pick mode:
 - challenge: push on a risky assumption, missing verification, or flawed direction
 
 {_mentor_style_instruction()}
+
+Adaptive operator profile:
+{json.dumps(profile.get("adaptation_signals", {}), ensure_ascii=False)}
 
 Current app: {app}
 Window title: {title[:160]}

@@ -42,6 +42,20 @@ from voice.speak import speak, speak_filler
 
 log = logging.getLogger(__name__)
 
+
+def _push_to_swift(message: str, urgency: float = 3) -> None:
+    """Push a proactive notification to connected Swift FloatingControlBar clients."""
+    try:
+        from server import push_proactive_event
+        push_proactive_event(
+            title="Marrow",
+            message=message,
+            assistant_id="marrow-reasoning",
+            context={"urgency": urgency},
+        )
+    except Exception:
+        pass  # server may not be running (Windows/headless without server)
+
 _last_reasoning_context_hash: str = ""
 _last_reasoning_attempt_ts: float = 0.0
 
@@ -982,6 +996,8 @@ async def _handle_result(
                 score=float(urgency),
                 payload=message[:220],
             )
+            # Push to Swift UI via proactive WebSocket stream
+            _push_to_swift(message, urgency)
 
             if act:
                 await speak(message)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import platform
+import shutil
 import subprocess
 from typing import Dict, Tuple
 
@@ -51,6 +53,13 @@ def _check_macos_accessibility() -> Tuple[bool, str]:
 
 
 def _check_hotkey_runtime() -> Tuple[bool, str]:
+    sys_name = platform.system()
+    if sys_name == "Linux":
+        if not shutil.which("python3") and not shutil.which("python"):
+            return False, "Python runtime not found for hotkey backend"
+        # The `keyboard` package is flaky on Linux without elevated access or evdev.
+        if os.geteuid() != 0:
+            return False, "Global hotkeys on Linux usually need root/evdev access; use wake word or disable hotkey"
     try:
         import keyboard  # noqa: F401
 
@@ -82,6 +91,10 @@ def check_permissions(detailed: bool = False) -> str:
     if sys_name == "Darwin":
         lines.append(
             "- macOS setup: System Settings > Privacy & Security > Screen Recording, Microphone, Accessibility"
+        )
+    elif sys_name == "Linux":
+        lines.append(
+            "- Linux setup: screen capture may need X11/XWayland access; global hotkeys may need evdev/root; clipboard may need wl-clipboard/xclip/xsel."
         )
 
     if bad == 0:
@@ -143,6 +156,29 @@ def open_permission_panels() -> str:
         return (
             f"Opened {opened}/{len(cmds)} Windows privacy panels. "
             "Check microphone/camera/privacy and app permissions."
+        )
+
+    if sys_name == "Linux":
+        candidates = [
+            ["gnome-control-center", "privacy"],
+            ["kdeconnect-settings"],
+            ["xdg-open", "https://wiki.archlinux.org/title/Xorg#Keyboard_input"],
+        ]
+        opened = 0
+        for c in candidates:
+            try:
+                p = subprocess.run(c, capture_output=True, text=True, timeout=6)
+                if p.returncode == 0:
+                    opened += 1
+                    break
+            except Exception:
+                pass
+        if opened:
+            return (
+                "Opened a Linux settings/help target. Check screen capture, accessibility/input, and clipboard tooling for your desktop environment."
+            )
+        return (
+            "Linux permission panels vary by desktop environment. Check screen capture/input permissions manually and install wl-clipboard or xclip if needed."
         )
 
     return (

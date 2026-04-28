@@ -15,6 +15,7 @@ coroutines on it — the only correct way to cross the thread/async boundary.
 
 import asyncio
 import logging
+import os
 import platform
 import sys
 import threading
@@ -95,6 +96,11 @@ def _hotkey_listener_windows() -> None:
 
 def _hotkey_listener_fallback() -> None:
     """Fallback hotkey using the `keyboard` package."""
+    if platform.system() == "Linux" and hasattr(os, "geteuid") and os.geteuid() != 0:
+        log.warning(
+            "Global hotkey disabled on Linux because the keyboard backend usually needs root/evdev access. Use wake word or set HOTKEY_ENABLED=0 to silence this."
+        )
+        return
     try:
         import keyboard
 
