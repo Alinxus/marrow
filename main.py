@@ -901,33 +901,37 @@ async def _main_async() -> None:
     _enforce_default_behavior_profile()
 
     # ── WebSocket bridge for Tauri frontend ───────────────────────────────
-    from ui.ws_bridge import start_server as _ws_start, broadcast as _ws_broadcast
+    _ws_broadcast = None
+    try:
+        from ui.ws_bridge import start_server as _ws_start, broadcast as _ws_broadcast, set_command_handler as _ws_set_handler
 
-    async def _ws_command_handler(msg: dict) -> None:
-        action = msg.get("action")
-        payload = msg.get("payload", "")
-        if action == "text_task_submitted" and payload:
-            from ui.bridge import get_bridge as _gb
-            try:
-                _gb().text_task_submitted.emit(str(payload))
-            except Exception:
-                asyncio.ensure_future(_execute_user_task(str(payload)))
-        elif action == "ask_requested":
-            from ui.bridge import get_bridge as _gb
-            try:
-                _gb().ask_requested.emit()
-            except Exception:
-                pass
-        elif action == "approval_response":
-            from ui.bridge import get_bridge as _gb
-            try:
-                _gb().respond_to_approval(msg.get("callback_id", ""), bool(msg.get("approved")))
-            except Exception:
-                pass
+        async def _ws_command_handler(msg: dict) -> None:
+            action = msg.get("action")
+            payload = msg.get("payload", "")
+            if action == "text_task_submitted" and payload:
+                from ui.bridge import get_bridge as _gb
+                try:
+                    _gb().text_task_submitted.emit(str(payload))
+                except Exception:
+                    asyncio.ensure_future(_execute_user_task(str(payload)))
+            elif action == "ask_requested":
+                from ui.bridge import get_bridge as _gb
+                try:
+                    _gb().ask_requested.emit()
+                except Exception:
+                    pass
+            elif action == "approval_response":
+                from ui.bridge import get_bridge as _gb
+                try:
+                    _gb().respond_to_approval(msg.get("callback_id", ""), bool(msg.get("approved")))
+                except Exception:
+                    pass
 
-    from ui.ws_bridge import set_command_handler as _ws_set_handler
-    _ws_set_handler(_ws_command_handler)
-    await _ws_start()
+        _ws_set_handler(_ws_command_handler)
+        await _ws_start()
+    except Exception as _ws_err:
+        log.warning(f"WebSocket bridge unavailable (Tauri UI won't connect): {_ws_err}")
+        _ws_broadcast = None
 
     audio_service = AudioCaptureService()
     interrupt_engine = InterruptDecisionEngine()
