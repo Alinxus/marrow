@@ -130,10 +130,72 @@ def _get_active_window_mac() -> tuple[str, str, str]:
     return "unknown", "unknown", ""
 
 
+def _get_active_window_linux() -> tuple[str, str, str]:
+    """Active window detection for Linux via xdotool or wmctrl."""
+    import subprocess, re
+
+    window_id = None
+    window_title = "unknown"
+    app_name = "unknown"
+
+    # Try xdotool first (most common)
+    try:
+        window_id = subprocess.check_output(
+            ["xdotool", "getactivewindow"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+        window_title = subprocess.check_output(
+            ["xdotool", "getwindowname", window_id], stderr=subprocess.DEVNULL
+        ).decode().strip() or "unknown"
+        pid_raw = subprocess.check_output(
+            ["xdotool", "getwindowpid", window_id], stderr=subprocess.DEVNULL
+        ).decode().strip()
+        if pid_raw.isdigit():
+            import psutil
+            try:
+                app_name = psutil.Process(int(pid_raw)).name().lower()
+                # strip common suffixes
+                app_name = re.sub(r"\.(bin|sh|py|AppImage)$", "", app_name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Fallback: wmctrl
+    if app_name == "unknown":
+        try:
+            lines = subprocess.check_output(
+                ["wmctrl", "-l", "-p"], stderr=subprocess.DEVNULL
+            ).decode().splitlines()
+            active_raw = subprocess.check_output(
+                ["xprop", "-root", "_NET_ACTIVE_WINDOW"], stderr=subprocess.DEVNULL
+            ).decode()
+            m = re.search(r"0x[0-9a-f]+", active_raw)
+            if m:
+                active_id_dec = str(int(m.group(), 16))
+                for line in lines:
+                    parts = line.split(None, 4)
+                    if len(parts) >= 5 and parts[2] == active_id_dec:
+                        window_title = parts[4].strip() or window_title
+                        if parts[2].isdigit():
+                            import psutil
+                            try:
+                                app_name = psutil.Process(int(parts[2])).name().lower()
+                            except Exception:
+                                pass
+                        break
+        except Exception:
+            pass
+
+    return app_name, window_title, ""
+
+
 def _get_active_window() -> tuple[str, str, str]:
     """Returns (app_name, window_title, focused_context) for the foreground window."""
     if platform.system() == "Darwin":
         return _get_active_window_mac()
+
+    if platform.system() == "Linux":
+        return _get_active_window_linux()
 
     try:
         import uiautomation as auto
