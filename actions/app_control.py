@@ -393,23 +393,74 @@ async def app_launch(path: str, arguments: str = "") -> str:
             return _err("No application path provided")
 
         if _is_windows():
-            DETACHED = 0x00000008
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            cmd = [target] + args
+            import shutil, os
+
+            # Normalize common names
+            _aliases = {
+                "explorer": "explorer.exe",
+                "file explorer": "explorer.exe",
+                "files": "explorer.exe",
+                "chrome": "chrome.exe",
+                "google chrome": "chrome.exe",
+                "edge": "msedge.exe",
+                "microsoft edge": "msedge.exe",
+                "firefox": "firefox.exe",
+                "notepad": "notepad.exe",
+                "calculator": "calc.exe",
+                "calc": "calc.exe",
+                "cmd": "cmd.exe",
+                "terminal": "wt.exe",
+                "windows terminal": "wt.exe",
+                "word": "winword.exe",
+                "excel": "excel.exe",
+                "powerpoint": "powerpnt.exe",
+                "outlook": "outlook.exe",
+                "vscode": "code.exe",
+                "vs code": "code.exe",
+                "spotify": "spotify.exe",
+                "discord": "discord.exe",
+                "slack": "slack.exe",
+                "zoom": "zoom.exe",
+                "teams": "teams.exe",
+            }
+            resolved = _aliases.get(target.lower(), target)
+
+            # 1. os.startfile — uses Windows shell, works for anything registered
+            try:
+                os.startfile(resolved)
+                return f"Launched: {resolved}"
+            except Exception:
+                pass
+
+            # 2. cmd /c start — Windows shell resolution (Start Menu, PATH, associations)
             try:
                 subprocess.Popen(
-                    cmd,
+                    ["cmd", "/c", "start", "", resolved] + args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return f"Launched: {resolved}"
+            except Exception:
+                pass
+
+            # 3. Direct Popen if it's in PATH
+            if shutil.which(resolved):
+                DETACHED = 0x00000008
+                CREATE_NEW_PROCESS_GROUP = 0x00000200
+                subprocess.Popen(
+                    [resolved] + args,
                     creationflags=DETACHED | CREATE_NEW_PROCESS_GROUP,
                     close_fds=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                return f"Launched: {target}"
-            except FileNotFoundError:
-                ps = f'Start-Process "{target}"' + (
-                    f' -ArgumentList "{arguments}"' if arguments else ""
-                )
-                return _ps_run(ps)
+                return f"Launched: {resolved}"
+
+            # 4. PowerShell fallback
+            ps = f'Start-Process "{resolved}"' + (
+                f' -ArgumentList "{arguments}"' if arguments else ""
+            )
+            return _ps_run(ps)
 
         if _is_macos():
             if target.startswith(("http://", "https://")):

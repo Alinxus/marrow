@@ -100,10 +100,15 @@ def compare_checkpoints(before_label: str, after_label: str, expectation: str = 
     status = "changed" if changed else "unchanged"
 
     if expectation:
-        hay = json.dumps(after, ensure_ascii=False).lower()
-        tokens = [tok for tok in " ".join(expectation.lower().split()).split() if len(tok) > 2][:5]
-        if tokens:
+        # Only match against the AFTER screen state, not the full JSON (avoids
+        # false positives where the keyword appears in unrelated workspace text)
+        after_screen = ascreen.get("app", "") + " " + ascreen.get("title", "") + " " + ascreen.get("focused", "")
+        hay = after_screen.lower()
+        tokens = [tok for tok in " ".join(expectation.lower().split()).split() if len(tok) > 3][:5]
+        if tokens and changed:
             status = "matched" if any(tok in hay for tok in tokens) else "not_matched"
+        elif tokens:
+            status = "not_matched"
 
     lines = [
         "## Verification Comparison",

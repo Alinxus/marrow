@@ -2872,12 +2872,19 @@ async def execute_action(task: str, context: str = "") -> str:
     # If base loop returns weak/incomplete answer, auto-escalate to complex planner.
     if config.AUTO_COMPLEX_ESCALATION:
         low = (final_text or "").lower()
+        _simple_task = any(w in resolved_task.lower() for w in [
+            "open ", "launch ", "start ", "close ", "minimize ", "maximize ",
+            "focus ", "switch to", "show ", "hide ",
+        ])
         incomplete = (
-            (not final_text)
-            or "max iterations reached" in low
-            or "[unknown tool" in low
-            or "[error" in low
-            or "unavailable" in low
+            not _simple_task
+            and (
+                (not final_text)
+                or "max iterations reached" in low
+                or "[unknown tool" in low
+                or "[error" in low
+                or "unavailable" in low
+            )
         )
         if incomplete:
             try:

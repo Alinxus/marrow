@@ -1354,7 +1354,6 @@ async def _execute_user_task(text: str) -> None:
     """
     try:
         from actions.executor import execute_action
-        from brain import conversation
         from ui.bridge import get_bridge
     except Exception as _imp_err:
         log.error(f"User task import failed: {_imp_err}")
@@ -1403,19 +1402,19 @@ async def _execute_user_task(text: str) -> None:
             bridge.task_response.emit(reply)
             return
 
-        decision = await _classify_voice_turn(text, context_hint=hint)
-        intent = decision.get("intent", "conversation")
+        # Text box input always executes — skip the voice classifier which
+        # defaults to "conversation" and produces useless "I'm here..." replies.
+        bridge.state_changed.emit("acting")
+        result = await execute_action(text, context=hint)
 
-        if intent == "action":
-            bridge.state_changed.emit("acting")
-            action_text = (decision.get("action_request") or "").strip() or text
+        if True:  # keep indentation consistent with removed intent block
             action_plan = None
             if config.DEEP_REASONING_ENABLED:
                 try:
                     from brain.execution_engine import prepare_reasoned_action
 
                     action_plan = await prepare_reasoned_action(
-                        action_text,
+                        text,
                         context_hint=hint,
                         session_id=config.DEEP_REASONING_SESSION_ID,
                     )
@@ -1434,12 +1433,11 @@ async def _execute_user_task(text: str) -> None:
             if action_plan and action_plan.get("mode") == "complex":
                 from actions.complex_task import execute_complex
 
-                goal = (action_plan.get("goal") or action_text).strip() or action_text
+                goal = (action_plan.get("goal") or text).strip() or text
                 result = await execute_complex(goal, context=hint, verify=True)
-            else:
-                if action_plan and action_plan.get("action_request"):
-                    action_text = action_plan.get("action_request", action_text)
-                result = await execute_action(action_text, context=hint)
+            elif action_plan and action_plan.get("action_request"):
+                result = await execute_action(action_plan["action_request"], context=hint)
+
             if action_plan:
                 try:
                     from brain.execution_engine import finalize_reasoned_action
@@ -1452,30 +1450,6 @@ async def _execute_user_task(text: str) -> None:
                 except Exception as exc:
                     log.debug(f"Reasoned text action finalize skipped: {exc}")
             out = _compose_action_result_reply(result)
-        elif intent == "clarify":
-            bridge.state_changed.emit("thinking")
-            out = (decision.get("reply") or "").strip() or "What exactly do you want me to do?"
-        elif intent == "ignore":
-            bridge.state_changed.emit("thinking")
-            out = (decision.get("reply") or "").strip() or "I didn't get a real request there."
-        else:
-            bridge.state_changed.emit("thinking")
-            deep_reply = None
-            if config.DEEP_REASONING_ENABLED:
-                try:
-                    from brain.deep_reasoning import maybe_handle_deep_reasoning
-
-                    deep_reply = await maybe_handle_deep_reasoning(
-                        text,
-                        context_hint=hint,
-                        session_id=config.DEEP_REASONING_SESSION_ID,
-                    )
-                except Exception as exc:
-                    log.debug(f"Deep reasoning text route skipped: {exc}")
-            if deep_reply:
-                out = deep_reply
-            else:
-                out = await conversation.handle_turn(text, context_hint=hint)
 
         out = (out or "Done.").strip()
         bridge.task_response.emit(out)
