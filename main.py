@@ -1602,13 +1602,16 @@ def _run_qt() -> None:
         log.info(f"React window skipped: {_rw_err}")
 
     # ── UI surface selection ───────────────────────────────────────────────
+    # Skip old Qt UI if React window loaded successfully
     ui_mode = (config.UI_MODE or "orb").lower()
     control_bar = None
     dashboard = None
     orb = None
     overlay = None
 
-    if ui_mode == "controlbar":
+    if _react_window is not None:
+        pass  # React window is the UI — no Qt orb/dashboard needed
+    elif ui_mode == "controlbar":
         from ui.control_bar import MarrowControlBar
 
         control_bar = MarrowControlBar()
