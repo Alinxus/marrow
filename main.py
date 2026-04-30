@@ -1352,9 +1352,19 @@ async def _execute_user_task(text: str) -> None:
     Execute a task typed by the user in the control bar chat.
     Runs on the asyncio loop, called from Qt thread via run_coroutine_threadsafe.
     """
-    from actions.executor import execute_action
-    from brain import conversation
-    from ui.bridge import get_bridge
+    try:
+        from actions.executor import execute_action
+        from brain import conversation
+        from ui.bridge import get_bridge
+    except Exception as _imp_err:
+        log.error(f"User task import failed: {_imp_err}")
+        try:
+            from ui.bridge import get_bridge as _gb
+            _gb().task_response.emit(f"Setup error: {_imp_err}")
+            _gb().state_changed.emit("idle")
+        except Exception:
+            pass
+        return
 
     bridge = get_bridge()
     try:
@@ -1647,6 +1657,12 @@ def _run_qt() -> None:
                 asyncio.run_coroutine_threadsafe(
                     _execute_user_task(text), _asyncio_loop
                 )
+            else:
+                try:
+                    _get_bridge().task_response.emit("Not ready yet — please wait a moment and try again.")
+                    _get_bridge().state_changed.emit("idle")
+                except Exception:
+                    pass
 
         _get_bridge().text_task_submitted.connect(_on_text_task_qt)
     except Exception as e:
