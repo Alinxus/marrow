@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from actions.memory import memory_get_context
 from brain.digital_twin import get_active_workspace_summary
 from brain.operator_profile import infer_operator_profile
 from brain.world_model import get_world_context
+from brain.knowledgebase import build_context as build_knowledge_context
 from storage import db, state_store
 
 log = logging.getLogger(__name__)
@@ -139,13 +139,13 @@ async def build_reasoning_context(
     if obs:
         blocks.append(obs[:1500])
 
-    memory = ""
+    knowledge = ""
     try:
-        memory = await memory_get_context(user_text[:200], session_id=session_id)
+        knowledge = await build_knowledge_context(user_text[:200], session_id=session_id)
     except Exception as exc:
-        log.debug(f"Context engine memory fetch failed: {exc}")
-    if memory:
-        blocks.append("[Retained memory]\n" + memory[:1800])
+        log.debug(f"Context engine knowledge fetch failed: {exc}")
+    if knowledge:
+        blocks.append("[Knowledgebase]\n" + knowledge[:2200])
 
     return {
         "session": session,
@@ -154,7 +154,7 @@ async def build_reasoning_context(
         "screen_context": screen,
         "conversation_context": convo,
         "observation_context": obs,
-        "memory_context": memory,
+        "memory_context": knowledge,
         "context_meta": {
             "blocks": len(blocks),
             "chars": sum(len(b) for b in blocks),

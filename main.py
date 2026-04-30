@@ -233,7 +233,9 @@ def _handle_slash_command(text: str) -> str | None:
             "- /model <reasoning|scoring|vision> <model_name>\n"
             "- /capabilities\n"
             "- /selfcheck\n"
-            "- /doctor\n"
+            "- /doctor [status|fix|research]\n"
+            "- /agi [status]\n"
+            "- /knowledge status\n"
             "- /chatstyle <short|balanced|detailed|status>\n"
             "- /proactive <quiet|normal|talkative|status>\n"
             "- /conversation <on|off|status>\n"
@@ -246,9 +248,12 @@ def _handle_slash_command(text: str) -> str | None:
         )
 
     if cmd == "/models":
-        llm_provider = os.environ.get("LLM_PROVIDER", config.LLM_PROVIDER)
+        from brain.llm import get_client
+
+        llm = get_client()
+        provider_status = llm.status()
         lines = [
-            f"Provider: {llm_provider}",
+            f"Provider: requested={provider_status.get('requested')} resolved={provider_status.get('resolved')} ({provider_status.get('reason')})",
             f"Anthropic: reasoning={os.environ.get('REASONING_MODEL', config.REASONING_MODEL)}, scoring={os.environ.get('SCORING_MODEL', config.SCORING_MODEL)}, vision={os.environ.get('VISION_MODEL', config.VISION_MODEL)}",
             f"OpenAI: reasoning={os.environ.get('OPENAI_REASONING_MODEL', config.OPENAI_REASONING_MODEL)}, scoring={os.environ.get('OPENAI_SCORING_MODEL', config.OPENAI_SCORING_MODEL)}, vision={os.environ.get('OPENAI_VISION_MODEL', config.OPENAI_VISION_MODEL)}",
             f"Ollama: base={os.environ.get('OLLAMA_BASE_URL', config.OLLAMA_BASE_URL)}, reasoning={os.environ.get('OLLAMA_REASONING_MODEL', config.OLLAMA_REASONING_MODEL)}, scoring={os.environ.get('OLLAMA_SCORING_MODEL', config.OLLAMA_SCORING_MODEL)}, vision={os.environ.get('OLLAMA_VISION_MODEL', config.OLLAMA_VISION_MODEL)}",
@@ -317,8 +322,11 @@ def _handle_slash_command(text: str) -> str | None:
         return "\n".join(lines)
 
     if cmd == "/doctor":
+        action = args[0].lower() if args else "status"
         from actions.capabilities import capability_summary_text
+        from actions.doctor import diagnose_failures
         from actions.permissions import check_permissions
+        from actions.doctor import apply_auto_fixes
         from brain.llm import get_client
         from brain.mentor_proactive import get_mentor_proactive_stats
         from brain.proactive import get_proactive_health
@@ -326,6 +334,14 @@ def _handle_slash_command(text: str) -> str | None:
         from brain.agi import get_agi
 
         lines = ["## Marrow Doctor"]
+        if action in ("fix", "repair", "autofix"):
+            lines.append(apply_auto_fixes())
+            lines.append("")
+        if action in ("research", "deep", "debug", "failures"):
+            lines.append(diagnose_failures(deep=True))
+            lines.append("")
+        elif action not in ("status", "fix", "repair", "autofix"):
+            return "Usage: /doctor [status|fix|research]"
         runtime_warning = _python_runtime_warning()
         if runtime_warning:
             lines.append(f"- Runtime warning: {runtime_warning}")
@@ -412,10 +428,36 @@ def _handle_slash_command(text: str) -> str | None:
         lines.append("")
         lines.append(check_permissions(detailed=True))
         lines.append("")
+        lines.append(diagnose_failures(deep=(action in ("research", "deep", "debug", "failures"))))
+        lines.append("")
         lines.append(
             "Recommended fixes: if anything is missing, run open_permission_panels, then restart terminal + Marrow."
         )
         return "\n".join(lines)
+
+    if cmd == "/agi":
+        from brain.agi import get_agi
+        from brain.knowledgebase import status_snapshot as _kb_status
+
+        stats = get_agi().get_stats()
+        kb = _kb_status()
+        return (
+            "AGI status:\n"
+            f"- open_gaps={stats.get('open_gaps')}\n"
+            f"- answered_gaps={stats.get('answered_gaps')}\n"
+            f"- graph_chars={stats.get('graph_summary_chars')}\n"
+            f"- ingest_retry_queue={stats.get('ingest_retry_queue')}\n"
+            f"- top_gaps={', '.join(stats.get('top_gaps', [])[:3]) if stats.get('top_gaps') else 'none'}\n"
+            f"- knowledge_sources={kb.get('source_count', 0)} retained={'yes' if kb.get('retained_available') else 'no'} ({kb.get('retained_reason', 'unknown')})"
+        )
+
+    if cmd == "/knowledge":
+        from brain.knowledgebase import status_text as _kb_status_text
+
+        action = args[0].lower() if args else "status"
+        if action == "status":
+            return _kb_status_text()
+        return "Usage: /knowledge status"
 
     if cmd == "/chatstyle":
         if not args or args[0].lower() == "status":
@@ -740,6 +782,18 @@ def _looks_like_action_request(text: str) -> bool:
     low = (text or "").strip().lower()
     if not low:
         return False
+    planning_markers = (
+        "help me think",
+        "ideas",
+        "advice",
+        "what should i",
+        "plan for",
+        "anniversary",
+        "brainstorm",
+        "how can i",
+    )
+    if any(marker in low for marker in planning_markers):
+        return False
     if low.startswith(("what", "why", "how", "when", "who", "where")):
         return False
     action_prefixes = (
@@ -776,8 +830,39 @@ def _looks_like_action_request(text: str) -> bool:
             "lets ",
         )
     ):
-        return True
+        imperative_markers = (
+            "open ",
+            "launch ",
+            "run ",
+            "execute ",
+            "create file",
+            "write file",
+            "search the web",
+            "send email",
+            "remind me",
+            "schedule",
+        )
+        return any(marker in low for marker in imperative_markers)
     return False
+
+
+def _is_planning_or_advice_request(text: str) -> bool:
+    low = (text or "").strip().lower()
+    if not low:
+        return False
+    markers = (
+        "help me think",
+        "plan something",
+        "plan for",
+        "idea",
+        "suggest",
+        "advice",
+        "anniversary",
+        "relationship",
+        "what should i do",
+        "brainstorm",
+    )
+    return any(m in low for m in markers)
 
 
 def _heuristic_intent_decision(user_text: str) -> dict:
@@ -1302,7 +1387,10 @@ async def _main_async() -> None:
         from brain.llm import get_client
 
         _llm = get_client()
-        log.info(f"  Provider  : {_llm.provider} (configured={config.LLM_PROVIDER})")
+        _status = _llm.status()
+        log.info(
+            f"  Provider  : {_status.get('resolved')} (requested={_status.get('requested')}, reason={_status.get('reason')})"
+        )
         log.info(f"  Reasoning : {_llm.model_for('reasoning')}")
     except Exception:
         log.info(f"  Provider  : {config.LLM_PROVIDER}")
@@ -1480,6 +1568,45 @@ async def _execute_user_task(text: str) -> None:
             pass
 
     try:
+        normalized_text = (text or "").strip().lower()
+        if normalized_text in {
+            "doctor",
+            "/doctor",
+            "marrow doctor",
+            "run doctor",
+            "selfcheck",
+            "self check",
+            "/selfcheck",
+            "diagnose",
+            "diagnostics",
+        }:
+            await _emit_ui("state_changed", "thinking")
+            await _emit_ui("task_response", _handle_slash_command("/doctor") or "Doctor unavailable.")
+            return
+        if normalized_text in {
+            "doctor research",
+            "marrow doctor research",
+            "debug failures",
+            "why did it fail",
+            "deep debug",
+            "failure analysis",
+        }:
+            await _emit_ui("state_changed", "thinking")
+            await _emit_ui("task_response", _handle_slash_command("/doctor research") or "Doctor research unavailable.")
+            return
+        if normalized_text in {
+            "doctor fix",
+            "marrow doctor fix",
+            "run doctor fix",
+            "repair marrow",
+            "autofix",
+            "auto fix",
+            "fix setup",
+        }:
+            await _emit_ui("state_changed", "thinking")
+            await _emit_ui("task_response", _handle_slash_command("/doctor fix") or "Doctor fix unavailable.")
+            return
+
         mission_result = await _handle_mission_command(text)
         if mission_result is not None:
             await _emit_ui("state_changed", "acting")
@@ -1512,8 +1639,31 @@ async def _execute_user_task(text: str) -> None:
             await _emit_ui("task_response", reply)
             return
 
-        # Text box input always executes — skip the voice classifier which
-        # defaults to "conversation" and produces useless "I'm here..." replies.
+        decision = await _classify_voice_turn(text, context_hint=hint)
+        intent = str(decision.get("intent", "action") or "action").lower()
+        if intent == "ignore":
+            out = (decision.get("reply") or "Can you rephrase what you want me to do?").strip()
+            await _emit_ui("task_response", out)
+            return
+        if intent == "clarify":
+            out = (decision.get("reply") or "What exactly should I do?").strip()
+            await _emit_ui("task_response", out)
+            return
+        if intent == "action" and _is_planning_or_advice_request(text):
+            intent = "conversation"
+
+        if intent == "conversation":
+            from brain import conversation
+
+            await _emit_ui("state_changed", "thinking")
+            conversation.activate_session()
+            reply = await conversation.handle_turn(text, context_hint=hint)
+            await _emit_ui("task_response", reply or "I'm here — tell me what you want to do next.")
+            return
+
+        action_text = (decision.get("action_request") or "").strip() or text
+
+        # Action route: execute directly or through reasoned planning.
         await _emit_ui("state_changed", "acting")
         action_plan = None
         if config.DEEP_REASONING_ENABLED:
@@ -1521,10 +1671,10 @@ async def _execute_user_task(text: str) -> None:
                 from brain.execution_engine import prepare_reasoned_action
 
                 action_plan = await prepare_reasoned_action(
-                    text,
-                    context_hint=hint,
-                    session_id=config.DEEP_REASONING_SESSION_ID,
-                )
+                        action_text,
+                        context_hint=hint,
+                        session_id=config.DEEP_REASONING_SESSION_ID,
+                    )
                 if action_plan.get("mode") == "clarify":
                     out = (
                         action_plan.get("clarifying_question")
@@ -1539,12 +1689,12 @@ async def _execute_user_task(text: str) -> None:
         if action_plan and action_plan.get("mode") == "complex":
             from actions.complex_task import execute_complex
 
-            goal = (action_plan.get("goal") or text).strip() or text
+            goal = (action_plan.get("goal") or action_text).strip() or action_text
             result = await execute_complex(goal, context=hint, verify=True)
         elif action_plan and action_plan.get("action_request"):
             result = await execute_action(action_plan["action_request"], context=hint)
         else:
-            result = await execute_action(text, context=hint)
+            result = await execute_action(action_text, context=hint)
 
         if action_plan:
             try:

@@ -143,9 +143,9 @@ async def _build_semantic_memory_context(current_context: str) -> str:
     Layer 4: Gap checking (fire-and-forget, doesn't block context assembly)
     Layer 5: Local observation fallback
     """
+    from brain.knowledgebase import build_context as build_knowledge_context
     from brain.wiki import wiki_context
     from brain.agi import get_agi
-    from actions.memory import get_memory_client
 
     parts = []
     agi = get_agi()
@@ -155,58 +155,15 @@ async def _build_semantic_memory_context(current_context: str) -> str:
     if wiki:
         parts.append(wiki)
 
-    # 2. Oracle memory search — best retrieval quality
+    # 2. Unified knowledgebase — local memory + retained context + oracle search
     if current_context:
-        oracle_ctx = await agi.get_oracle_context(current_context[:600], limit=8)
-        if oracle_ctx:
-            parts.append(oracle_ctx)
-
-    # 2.5 RetainDB context/profile (throttled + cached, stronger awareness)
-    global _last_retaindb_ctx_fetch, _last_retaindb_ctx_key, _last_retaindb_ctx_value
-    global _last_retaindb_profile_fetch, _last_retaindb_profile_value
-    client = get_memory_client()
-    now = time.time()
-    if client and current_context:
-        query_key = hashlib.md5(current_context[:900].encode("utf-8")).hexdigest()
-        need_ctx_fetch = query_key != _last_retaindb_ctx_key or (
-            now - _last_retaindb_ctx_fetch
-        ) >= max(20, int(getattr(config, "RETAINDB_CONTEXT_REFRESH_SECONDS", 75)))
-        if need_ctx_fetch:
-            try:
-                remote_ctx = await client.query_context(
-                    current_context[:900], include_profile=True
-                )
-                assembled = (
-                    remote_ctx.get("context") or remote_ctx.get("content") or ""
-                ).strip()
-                if assembled:
-                    _last_retaindb_ctx_value = assembled[:2200]
-                    _last_retaindb_ctx_key = query_key
-                    _last_retaindb_ctx_fetch = now
-            except Exception as e:
-                log.debug(f"RetainDB context query failed: {e}")
-        if _last_retaindb_ctx_value:
-            parts.append(f"=== RETAINDB CONTEXT ===\n{_last_retaindb_ctx_value}")
-
-        need_profile_fetch = (now - _last_retaindb_profile_fetch) >= max(
-            60, int(getattr(config, "RETAINDB_PROFILE_REFRESH_SECONDS", 300))
+        knowledge_ctx = await build_knowledge_context(
+            current_context[:900],
+            session_id=config.DEEP_REASONING_SESSION_ID,
+            limit=8,
         )
-        if need_profile_fetch:
-            try:
-                profile = await client.get_profile_model()
-                if profile and not profile.get("error"):
-                    compact = {
-                        "preferences": profile.get("preferences", {}),
-                        "goals": profile.get("goals", []),
-                        "working_style": profile.get("working_style", ""),
-                        "frequent_entities": profile.get("frequent_entities", [])[:10],
-                    }
-                    _last_retaindb_profile_value = json.dumps(compact)[:1400]
-                    _last_retaindb_profile_fetch = now
-            except Exception as e:
-                log.debug(f"RetainDB profile fetch failed: {e}")
-        if _last_retaindb_profile_value:
-            parts.append(f"=== RETAINDB PROFILE ===\n{_last_retaindb_profile_value}")
+        if knowledge_ctx:
+            parts.append(f"=== KNOWLEDGEBASE ===\n{knowledge_ctx[:3200]}")
 
     # 3. Memory graph connections
     graph_ctx = agi.get_graph_context()

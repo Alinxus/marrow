@@ -30,6 +30,13 @@ It continuously ingests screen context, maintains memory, reasons in the backgro
 
 Marrow starts without any API key. The server boots, memory and conversations work, but chat replies need at least one LLM key. Set `OPENAI_API_KEY` for the cheapest path — or `ANTHROPIC_API_KEY` if you have one.
 
+If it works on one laptop but "does nothing" on another, check these first:
+- same venv/interpreter is being used (`python -V`, `where python`)
+- env file exists at `~/.marrow/.env` with a valid provider key
+- runtime permissions are granted (mic/screen/accessibility where applicable)
+- approval mode is set as intended (`MARROW_APPROVAL_MODE=guarded|unlocked`)
+- runtime capabilities are available (audio/browser automation dependencies)
+
 ### Step 1 — create your env file
 
 ```
@@ -61,6 +68,9 @@ mkdir %USERPROFILE%\.marrow
 copy marrow\.env.example %USERPROFILE%\.marrow\.env
 notepad %USERPROFILE%\.marrow\.env    # add OPENAI_API_KEY
 
+# Optional full-autonomy profile (no approval prompts)
+# set MARROW_APPROVAL_MODE=unlocked
+
 # 3. Smoke-test the server (no UI required)
 cd marrow
 ..\\.venv\\Scripts\\python test_server.py
@@ -68,6 +78,16 @@ cd marrow
 # 4. Run the full app (Windows system tray UI)
 ..\\.venv\\Scripts\\python main.py
 ```
+
+Quick runtime checks (ask in chat):
+- `check_permissions`
+- `show capabilities`
+- `open file explorer`
+- `marrow doctor`
+- `marrow doctor fix`
+- `marrow doctor research`
+- `/agi status`
+- `/knowledge status`
 
 Audio note: if microphone fails on startup set `AUDIO_INPUT_DEVICE=<index>` or `AUDIO_ENABLED=0` in your `.env`.
 
@@ -197,11 +217,11 @@ What each check means:
 
 Set `LLM_PROVIDER` in env:
 
-- `auto` (recommended): OpenAI -> Anthropic -> Ollama -> none.
-- `openai`
+- `openai` (default)
 - `anthropic`
 - `ollama`
 - `none` (capture/memory only)
+- `auto` (legacy fallback chain)
 
 Marrow boots even without keys.
 
@@ -229,7 +249,7 @@ This means you should not need to run `/proactive talkative` or `/conversation o
 ## Recommended `.env`
 
 ```env
-LLM_PROVIDER=auto
+LLM_PROVIDER=openai
 
 # Optional cloud keys
 OPENAI_API_KEY=

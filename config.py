@@ -17,9 +17,9 @@ else:
 TOKEN_SAVER_MODE = os.environ.get("TOKEN_SAVER_MODE", "0") == "1"
 
 # ─── LLM Provider ─────────────────────────────────────────────────────────────
-# Set LLM_PROVIDER to: "auto" | "anthropic" | "openai" | "ollama" | "none"
-# auto = prefer configured cloud key, otherwise local Ollama, otherwise no-LLM mode
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "auto")
+# Set LLM_PROVIDER to: "openai" | "anthropic" | "ollama" | "none" | "auto"
+# Default is OpenAI; auto keeps the old fallback chain.
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
 
 # Anthropic (optional - used if LLM_PROVIDER=anthropic and key provided)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")

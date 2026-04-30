@@ -201,6 +201,7 @@ class LLMClient:
 
     def __init__(self, provider: str = None):
         requested = (provider or config.LLM_PROVIDER or "auto").lower().strip()
+        self.requested = requested
         self.provider = self._resolve_provider(requested)
         self._anthropic = None
         self._openai = None
@@ -216,33 +217,55 @@ class LLMClient:
     def _resolve_provider(self, requested: str) -> str:
         """Resolve provider safely. Never raises on missing keys."""
         if requested == "none":
+            self._resolution_reason = "requested none"
             return "none"
 
         if requested == "anthropic":
             if config.ANTHROPIC_API_KEY:
+                self._resolution_reason = "anthropic key present"
                 return "anthropic"
+            self._resolution_reason = "ANTHROPIC_API_KEY missing"
             log.warning("ANTHROPIC_API_KEY missing; falling back")
 
         if requested == "openai":
             if config.OPENAI_API_KEY:
+                self._resolution_reason = "openai key present"
                 return "openai"
+            self._resolution_reason = "OPENAI_API_KEY missing"
             log.warning("OPENAI_API_KEY missing; falling back")
 
         if requested == "ollama":
             if self._ollama_available():
+                self._resolution_reason = "ollama available"
                 return "ollama"
+            self._resolution_reason = "ollama unavailable"
             log.warning("Ollama unavailable; falling back")
 
         # auto / fallback chain
         if config.OPENAI_API_KEY:
+            self._resolution_reason = "auto selected openai"
             return "openai"
         if config.ANTHROPIC_API_KEY:
+            self._resolution_reason = "auto selected anthropic"
             return "anthropic"
         if self._ollama_available():
+            self._resolution_reason = "auto selected ollama"
             return "ollama"
 
+        self._resolution_reason = "no API keys or local LLM available"
         log.warning("No LLM backend available. Running in no-LLM mode.")
         return "none"
+
+    def status(self) -> dict[str, Any]:
+        """Return a compact provider status snapshot for logs/UI."""
+        return {
+            "requested": self.requested,
+            "resolved": self.provider,
+            "reason": getattr(self, "_resolution_reason", "unknown"),
+            "openai_key": bool(config.OPENAI_API_KEY),
+            "anthropic_key": bool(config.ANTHROPIC_API_KEY),
+            "ollama_available": self._ollama_available(),
+        }
 
     # ── Lazy backends ──────────────────────────────────────────────────────
 

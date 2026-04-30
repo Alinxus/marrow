@@ -2679,6 +2679,28 @@ def _task_needs_generalist_escalation(task: str) -> bool:
     return any(token in low for token in triggers)
 
 
+def _task_requires_real_execution(task: str) -> bool:
+    low = (task or "").lower().strip()
+    if not low:
+        return False
+    # Pure Q&A / summarization tasks do not require side effects.
+    informational = [
+        "what",
+        "why",
+        "how",
+        "summarize",
+        "explain",
+        "tell me",
+        "status",
+        "list",
+        "show",
+    ]
+    if any(low.startswith(prefix + " ") for prefix in informational):
+        return False
+    # Most imperative requests should result in an actual tool execution.
+    return True
+
+
 async def _build_dynamic_capability_context() -> str:
     try:
         from actions.capabilities import capability_summary_text
@@ -2852,10 +2874,48 @@ async def execute_action(task: str, context: str = "") -> str:
         memory_mod.memory_record_conversation("user", task, "action_request")
     )
 
+    tool_calls: list[str] = []
+    effectful_tools = {
+        "run_command",
+        "write_file",
+        "append_file",
+        "delete_file",
+        "browser_navigate",
+        "browser_click",
+        "browser_type",
+        "browser_search",
+        "browser_open_tab",
+        "browser_switch_tab",
+        "clipboard_write",
+        "process_kill",
+        "window_focus",
+        "window_move",
+        "window_minimize",
+        "window_maximize",
+        "window_close",
+        "launch_app",
+        "open_url",
+        "type_text",
+        "mouse_click",
+        "mouse_double_click",
+        "mouse_drag",
+        "hotkey",
+        "key_press",
+        "create_reminder",
+        "cancel_reminder",
+        "pause_background",
+        "resume_background",
+        "terminate_background",
+        "outlook_draft_email",
+        "outlook_send_email",
+        "outlook_create_event",
+    }
+
     async def _tool_handler(name: str, inp: dict) -> str:
         return await _async_handle_tool_call(name, inp, context)
 
     async def _on_tool_call(name: str, inp: dict, result: str) -> None:
+        tool_calls.append(name)
         _emit_execution_status(
             "tool",
             f"{name} completed",
@@ -2999,6 +3059,19 @@ async def execute_action(task: str, context: str = "") -> str:
                     pass
         except Exception as e:
             log.debug(f"Adapter auto-learn skipped: {e}")
+
+    if _task_requires_real_execution(resolved_task):
+        called_effectful = any(name in effectful_tools for name in tool_calls)
+        if not tool_calls or not called_effectful:
+            guidance = (
+                "I did not execute a real action for that request. "
+                "I only analyzed/planned. Try a more explicit command "
+                '(e.g., "open File Explorer", "launch Chrome", "create a reminder for 4pm").'
+            )
+            if final_text:
+                final_text = f"{final_text}\n\n[Execution warning]\n{guidance}"
+            else:
+                final_text = f"[Execution warning]\n{guidance}"
 
     asyncio.create_task(
         memory_mod.memory_record_conversation(
