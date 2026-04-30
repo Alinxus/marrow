@@ -36,7 +36,7 @@ export default function ChatSection({ messages, busy, onSend }: Props) {
       {/* Message list */}
       {messages.length > 0 && (
         <div
-          className="flex flex-col gap-1.5 max-h-52 overflow-y-auto pr-1"
+          className="flex flex-col gap-1.5 max-h-64 overflow-y-auto pr-1"
           style={{ scrollbarWidth: "thin" }}
         >
           <AnimatePresence initial={false}>
@@ -54,17 +54,18 @@ export default function ChatSection({ messages, busy, onSend }: Props) {
                   style={
                     m.role === "user"
                       ? {
-                          background: "rgba(99,102,241,0.9)",
+                          background: "rgba(37,99,235,0.9)",
                           color: "white",
                           borderBottomRightRadius: 6,
+                          border: "1px solid rgba(96,165,250,0.45)",
                         }
                       : {
                           background: m.pending
-                            ? "rgba(230,230,240,0.6)"
-                            : "rgba(240,240,248,0.8)",
-                          color: "rgba(20,20,36,0.9)",
+                            ? "rgba(255,255,255,0.05)"
+                            : "rgba(255,255,255,0.08)",
+                          color: "rgba(220,230,248,0.95)",
                           borderBottomLeftRadius: 6,
-                          border: "1px solid rgba(200,200,220,0.4)",
+                          border: "1px solid rgba(84,97,126,0.7)",
                         }
                   }
                 >
@@ -77,12 +78,25 @@ export default function ChatSection({ messages, busy, onSend }: Props) {
         </div>
       )}
 
+      {messages.length === 0 && (
+        <div
+          className="rounded-md px-3 py-2 text-[9px]"
+          style={{
+            background: "rgba(255,255,255,0.04)",
+            border: "1px dashed rgba(84,97,126,0.7)",
+            color: "rgba(165,181,210,0.9)",
+          }}
+        >
+          Ask for anything: summarize screen context, draft replies, check tasks, or trigger actions.
+        </div>
+      )}
+
       {/* Input */}
       <div
-        className="flex items-center gap-1.5 rounded-xl px-3 py-1.5"
+        className="flex items-center gap-1.5 rounded-md px-3 py-1.5"
         style={{
-          background: "rgba(240,240,250,0.7)",
-          border: "1px solid rgba(200,200,220,0.5)",
+          background: "rgba(255,255,255,0.04)",
+          border: "1px solid rgba(84,97,126,0.7)",
         }}
       >
         <input
@@ -92,9 +106,12 @@ export default function ChatSection({ messages, busy, onSend }: Props) {
           onKeyDown={onKeyDown}
           disabled={busy}
           placeholder={busy ? "working…" : "Ask or tell Marrow anything…"}
-          className="flex-1 bg-transparent text-[10px] outline-none placeholder:text-[rgba(140,140,160,0.7)]"
-          style={{ color: "rgba(20,20,36,0.9)", minWidth: 0 }}
+          className="flex-1 bg-transparent text-[10px] outline-none placeholder:text-[rgba(145,160,188,0.7)]"
+          style={{ color: "rgba(228,236,252,0.95)", minWidth: 0 }}
         />
+        <span className="text-[8px]" style={{ color: "rgba(145,160,188,0.82)" }}>
+          Enter
+        </span>
         {input.trim() && (
           <motion.button
             initial={{ scale: 0, opacity: 0 }}
@@ -103,7 +120,7 @@ export default function ChatSection({ messages, busy, onSend }: Props) {
             onClick={submit}
             disabled={busy}
             className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 active:scale-90 transition-transform"
-            style={{ background: "rgba(99,102,241,0.9)" }}
+            style={{ background: "rgba(37,99,235,0.92)", border: "1px solid rgba(96,165,250,0.45)" }}
           >
             <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
               <path d="M1 7L7 1M7 1H2M7 1V6" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>

@@ -178,6 +178,7 @@ TRAY_ENABLED = os.environ.get("TRAY_ENABLED", "1") == "1"
 # controlbar = unified floating control bar
 UI_MODE = os.environ.get("UI_MODE", "orb").lower()
 CONTROL_BAR_AUTO_SHOW = os.environ.get("CONTROL_BAR_AUTO_SHOW", "0") == "1"
+WEB_UI_ENABLED = os.environ.get("WEB_UI_ENABLED", "1") == "1"
 
 # On-demand activation
 ON_DEMAND_HOTKEY = os.environ.get("ON_DEMAND_HOTKEY", "ctrl+shift+m")

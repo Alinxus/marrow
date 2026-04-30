@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { MarrowState } from "../hooks/useMarrowBridge";
 
 const ORB_COLORS: Record<MarrowState, string[]> = {
-  idle:     ["rgba(180,180,200,0.5)", "rgba(200,200,220,0.3)"],
+  idle:     ["rgba(180,180,200,0.65)", "rgba(200,200,220,0.36)"],
   thinking: ["rgba(234,179,8,0.9)",   "rgba(251,191,36,0.5)"],
   acting:   ["rgba(99,102,241,0.95)", "rgba(139,92,246,0.5)"],
   speaking: ["rgba(34,197,94,0.9)",   "rgba(74,222,128,0.5)"],
@@ -43,7 +43,8 @@ export default function Orb({ state, connected, size = 10 }: Props) {
           width: size,
           height: size,
           background: connected ? core : "rgba(150,150,170,0.3)",
-          boxShadow: connected && pulse ? `0 0 ${size}px ${glow}` : "none",
+          boxShadow: connected ? `0 0 ${size * 0.8}px ${glow}` : "none",
+          border: "1px solid rgba(255,255,255,0.65)",
         }}
         animate={{ scale: pulse ? [1, 1.15, 1] : 1 }}
         transition={{ duration: 0.9, repeat: pulse ? Infinity : 0, ease: "easeInOut" }}

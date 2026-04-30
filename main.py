@@ -944,18 +944,70 @@ async def _main_async() -> None:
     except Exception:
         _bridge = None
 
+    # Mirror Qt bridge signals to WebSocket so any emitter path reaches web UI.
+    _ws_signal_forwarders = []
+
+    def _schedule_ws_broadcast(signal_name: str, data):
+        if not _ws_broadcast:
+            return
+        try:
+            loop = _asyncio_loop
+            if loop and not loop.is_closed():
+                asyncio.run_coroutine_threadsafe(_ws_broadcast(signal_name, data), loop)
+                return
+        except Exception:
+            pass
+        try:
+            running_loop = asyncio.get_running_loop()
+            running_loop.create_task(_ws_broadcast(signal_name, data))
+        except Exception:
+            pass
+
+    if _bridge and _ws_broadcast:
+        def _forward_signal(signal_name: str, *args):
+            data = args[0] if len(args) == 1 else list(args)
+            _schedule_ws_broadcast(signal_name, data)
+
+        _signals_to_forward = [
+            "state_changed",
+            "message_spoken",
+            "focus_changed",
+            "reasoning_update",
+            "world_model_updated",
+            "stats_updated",
+            "approval_requested",
+            "notify",
+            "toast_requested",
+            "transcript_heard",
+            "mic_active",
+            "task_response",
+            "claim_verified",
+            "mission_update",
+            "agent_update",
+            "overlay_update",
+            "verification_update",
+            "audio_debug",
+            "perception_update",
+            "deep_reasoning_update",
+        ]
+        for _sig_name in _signals_to_forward:
+            try:
+                _handler = (lambda *a, __n=_sig_name: _forward_signal(__n, *a))
+                getattr(_bridge, _sig_name).connect(_handler)
+                _ws_signal_forwarders.append(_handler)
+            except Exception:
+                pass
+
     def _emit(signal_name: str, *args):
         if _bridge:
             try:
                 getattr(_bridge, signal_name).emit(*args)
             except Exception:
                 pass
-        # Mirror every signal to the Tauri WebSocket frontend
-        try:
+        elif _ws_broadcast:
+            # Fallback if Qt bridge isn't available.
             data = args[0] if len(args) == 1 else list(args)
-            asyncio.ensure_future(_ws_broadcast(signal_name, data))
-        except Exception:
-            pass
+            _schedule_ws_broadcast(signal_name, data)
 
     def _trace_audio(message: str):
         _emit("audio_debug", str(message)[:220])
@@ -1412,23 +1464,38 @@ async def _execute_user_task(text: str) -> None:
         return
 
     bridge = get_bridge()
+
+    async def _emit_ui(signal_name: str, *args):
+        """Emit to Qt bridge and WebSocket frontend."""
+        try:
+            getattr(bridge, signal_name).emit(*args)
+        except Exception:
+            pass
+        try:
+            from ui.ws_bridge import broadcast as _ws_broadcast
+
+            data = args[0] if len(args) == 1 else list(args)
+            await _ws_broadcast(signal_name, data)
+        except Exception:
+            pass
+
     try:
         mission_result = await _handle_mission_command(text)
         if mission_result is not None:
-            bridge.state_changed.emit("acting")
-            bridge.task_response.emit(mission_result)
+            await _emit_ui("state_changed", "acting")
+            await _emit_ui("task_response", mission_result)
             return
 
         swarm_result = await _handle_swarm_command(text)
         if swarm_result is not None:
-            bridge.state_changed.emit("acting")
-            bridge.task_response.emit(swarm_result)
+            await _emit_ui("state_changed", "acting")
+            await _emit_ui("task_response", swarm_result)
             return
 
         slash_result = _handle_slash_command(text)
         if slash_result is not None:
-            bridge.state_changed.emit("acting")
-            bridge.task_response.emit(slash_result)
+            await _emit_ui("state_changed", "acting")
+            await _emit_ui("task_response", slash_result)
             return
 
         ctx = db.get_recent_context(30)
@@ -1440,14 +1507,14 @@ async def _execute_user_task(text: str) -> None:
             pass
 
         if _is_runtime_status_question(text):
-            bridge.state_changed.emit("thinking")
+            await _emit_ui("state_changed", "thinking")
             reply = _runtime_status_reply()
-            bridge.task_response.emit(reply)
+            await _emit_ui("task_response", reply)
             return
 
         # Text box input always executes — skip the voice classifier which
         # defaults to "conversation" and produces useless "I'm here..." replies.
-        bridge.state_changed.emit("acting")
+        await _emit_ui("state_changed", "acting")
         action_plan = None
         if config.DEEP_REASONING_ENABLED:
             try:
@@ -1463,7 +1530,7 @@ async def _execute_user_task(text: str) -> None:
                         action_plan.get("clarifying_question")
                         or "What exactly should I do?"
                     )
-                    bridge.task_response.emit(out)
+                    await _emit_ui("task_response", out)
                     return
             except Exception as exc:
                 log.debug(f"Reasoned text action planning skipped: {exc}")
@@ -1492,13 +1559,13 @@ async def _execute_user_task(text: str) -> None:
                 log.debug(f"Reasoned text action finalize skipped: {exc}")
 
         out = (_compose_action_result_reply(result) or "Done.").strip()
-        bridge.task_response.emit(out)
+        await _emit_ui("task_response", out)
     except Exception as e:
         err = f"Error: {e}"
         log.error(f"User task failed: {e}")
-        bridge.task_response.emit(err)
+        await _emit_ui("task_response", err)
     finally:
-        bridge.state_changed.emit("idle")
+        await _emit_ui("state_changed", "idle")
 
 
 def _run_asyncio_backend() -> None:
@@ -1569,12 +1636,22 @@ def _build_tray(app, toggle_cb):
 
 def _run_qt() -> None:
     """Build and run the Qt application on the main thread."""
+    import signal
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import Qt, QTimer, QCoreApplication
+
+    # Required by Qt WebEngine on some Windows setups.
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Marrow")
+
+    # Make Ctrl+C reliable while Qt event loop is running.
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    sig_timer = QTimer()
+    sig_timer.timeout.connect(lambda: None)
+    sig_timer.start(250)
 
     # Start backend only after QApplication exists on main thread.
     # This avoids Windows DPI/context races and keeps Qt ownership correct.
@@ -1595,11 +1672,12 @@ def _run_qt() -> None:
 
     # ── React UI (pywebview-free, uses PySide6 WebEngine) ─────────────────
     _react_window = None
-    try:
-        from ui.webview_window import create_react_window
-        _react_window = create_react_window(app)
-    except Exception as _rw_err:
-        log.info(f"React window skipped: {_rw_err}")
+    if config.WEB_UI_ENABLED:
+        try:
+            from ui.webview_window import create_react_window
+            _react_window = create_react_window(app)
+        except Exception as _rw_err:
+            log.warning(f"React window skipped: {_rw_err}")
 
     # ── UI surface selection ───────────────────────────────────────────────
     # Skip old Qt UI if React window loaded successfully
@@ -1719,48 +1797,49 @@ def _run_qt() -> None:
     except Exception as e:
         log.warning(f"Claim card wire failed: {e}")
 
-    # ── Toast notifications ────────────────────────────────────────────────
-    try:
-        from ui.bridge import get_bridge
-        from ui.toast import get_toast_manager
+    # ── Toast notifications (Qt-only surface) ─────────────────────────────
+    if _react_window is None:
+        try:
+            from ui.bridge import get_bridge
+            from ui.toast import get_toast_manager
 
-        toast_mgr = get_toast_manager()
+            toast_mgr = get_toast_manager()
 
-        def _on_toast(title: str, body: str, urgency: int):
-            toast_mgr.show(title, body, urgency)
+            def _on_toast(title: str, body: str, urgency: int):
+                toast_mgr.show(title, body, urgency)
 
-        get_bridge().toast_requested.connect(_on_toast)
+            get_bridge().toast_requested.connect(_on_toast)
 
-        # Also wire message_spoken → toast (shows what Marrow said visually)
-        def _on_message_spoken(text: str, urgency: int):
-            def _open_context():
-                if control_bar is not None:
-                    if not control_bar.isVisible():
-                        control_bar.show()
-                    try:
-                        control_bar.open_with_notification_context(text)
-                    except Exception:
-                        pass
-                elif dashboard is not None and orb is not None:
-                    if not dashboard.isVisible():
-                        dashboard.open_near(orb.geometry())
-                    try:
-                        dashboard._open_notification_context()
-                    except Exception:
-                        pass
+            # Also wire message_spoken → toast (shows what Marrow said visually)
+            def _on_message_spoken(text: str, urgency: int):
+                def _open_context():
+                    if control_bar is not None:
+                        if not control_bar.isVisible():
+                            control_bar.show()
+                        try:
+                            control_bar.open_with_notification_context(text)
+                        except Exception:
+                            pass
+                    elif dashboard is not None and orb is not None:
+                        if not dashboard.isVisible():
+                            dashboard.open_near(orb.geometry())
+                        try:
+                            dashboard._open_notification_context()
+                        except Exception:
+                            pass
 
-            toast_mgr.show(
-                config.MARROW_NAME,
-                text,
-                urgency,
-                action_label="Open",
-                action_callback=_open_context,
-            )
+                toast_mgr.show(
+                    config.MARROW_NAME,
+                    text,
+                    urgency,
+                    action_label="Open",
+                    action_callback=_open_context,
+                )
 
-        get_bridge().message_spoken.connect(_on_message_spoken)
+            get_bridge().message_spoken.connect(_on_message_spoken)
 
-    except Exception as e:
-        log.warning(f"Toast wire failed: {e}")
+        except Exception as e:
+            log.warning(f"Toast wire failed: {e}")
 
     # ── Backend shutdown → app quit ───────────────────────────────────────
     def _check_backend():

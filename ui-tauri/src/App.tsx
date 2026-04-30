@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef } from "react";
-import { AnimatePresence } from "framer-motion";
 import ControlBar from "./components/ControlBar";
 import { useMarrowBridge, MarrowState } from "./hooks/useMarrowBridge";
 
@@ -7,6 +6,7 @@ export interface ProactiveNotif {
   id: string;
   text: string;
   urgency: number;
+  createdAt: number;
 }
 
 export interface ChatMessage {
@@ -24,6 +24,10 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [notifs, setNotifs] = useState<ProactiveNotif[]>([]);
   const [connected, setConnected] = useState(false);
+  const [lastSpoken, setLastSpoken] = useState("");
+  const [audioTrace, setAudioTrace] = useState<string[]>([]);
+  const [worldFacts, setWorldFacts] = useState<string[]>([]);
+  const [stats, setStats] = useState({ screens: 0, speaks: 0, actions: 0 });
   const pendingIdRef = useRef<string | null>(null);
 
   const addMessage = useCallback((role: "user" | "marrow", text: string, pending = false) => {
@@ -43,8 +47,54 @@ export default function App() {
     message_spoken: (data) => {
       const text = Array.isArray(data) ? data[0] : String(data || "");
       const urgency = Array.isArray(data) ? Number(data[1]) || 2 : 2;
+      setLastSpoken(text);
       const id = `notif-${Date.now()}`;
-      setNotifs((prev) => [{ id, text, urgency }, ...prev].slice(0, 4));
+      setNotifs((prev) => [{ id, text, urgency, createdAt: Date.now() }, ...prev].slice(0, 6));
+    },
+    toast_requested: (data) => {
+      const arr = Array.isArray(data) ? data : ["", String(data || ""), 2];
+      const text = String(arr[1] || arr[0] || "");
+      const urgency = Number(arr[2]) || 2;
+      if (!text) return;
+      const id = `toast-${Date.now()}`;
+      setNotifs((prev) => [{ id, text, urgency, createdAt: Date.now() }, ...prev].slice(0, 6));
+    },
+    notify: (data) => {
+      const arr = Array.isArray(data) ? data : ["", String(data || "")];
+      const text = String(arr[1] || arr[0] || "");
+      if (!text) return;
+      const id = `notify-${Date.now()}`;
+      setNotifs((prev) => [{ id, text, urgency: 2, createdAt: Date.now() }, ...prev].slice(0, 6));
+    },
+    audio_debug: (data) => {
+      const line = String(data || "").trim();
+      if (!line) return;
+      setAudioTrace((prev) => [line, ...prev].slice(0, 6));
+    },
+    world_model_updated: (data) => {
+      try {
+        const parsed = typeof data === "string" ? JSON.parse(data) : data;
+        if (!Array.isArray(parsed)) return;
+        const facts = parsed
+          .slice(0, 6)
+          .map((item: any) => Array.isArray(item) ? String(item[1] || "") : String(item?.content || ""))
+          .filter(Boolean);
+        setWorldFacts(facts);
+      } catch {
+        // ignore malformed payload
+      }
+    },
+    stats_updated: (data) => {
+      try {
+        const parsed = typeof data === "string" ? JSON.parse(data) : data;
+        setStats({
+          screens: Number(parsed?.screens) || 0,
+          speaks: Number(parsed?.speaks) || 0,
+          actions: Number(parsed?.actions) || 0,
+        });
+      } catch {
+        // ignore malformed payload
+      }
     },
     task_response: (data) => {
       const text = String(data || "Done.");
@@ -84,6 +134,10 @@ export default function App() {
     setNotifs((prev) => prev.filter((n) => n.id !== id));
   }, []);
 
+  const clearNotifs = useCallback(() => {
+    setNotifs([]);
+  }, []);
+
   return (
     <ControlBar
       state={state}
@@ -96,6 +150,11 @@ export default function App() {
       onSend={handleSend}
       onAsk={handleAsk}
       onDismissNotif={dismissNotif}
+      onClearNotifs={clearNotifs}
+      lastSpoken={lastSpoken}
+      stats={stats}
+      worldFacts={worldFacts}
+      audioTrace={audioTrace}
     />
   );
 }
