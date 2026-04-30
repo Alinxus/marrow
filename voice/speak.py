@@ -164,51 +164,52 @@ def _prepare_tts_text(text: str) -> str:
 def _play_deepgram_audio_bytes(
     audio_bytes: bytes, sample_rate_hint: int = 24000
 ) -> None:
-    if sd is None:
-        raise RuntimeError(_SOUNDDEVICE_IMPORT_ERROR or "sounddevice unavailable")
-    if not audio_bytes:
-        return
-    if _cancel_event.is_set():
+    if not audio_bytes or _cancel_event.is_set():
         return
 
-    # Preferred path: WAV container
+    # Always write to a temp WAV and play via platform player.
+    # sounddevice RawOutputStream uses WDM-KS on Windows which breaks with -9999.
+    import tempfile, os, subprocess, shutil
+
+    # Ensure we have a valid WAV; if raw PCM, wrap it.
     if audio_bytes[:4] == b"RIFF":
-        with io.BytesIO(audio_bytes) as bio:
-            with wave.open(bio, "rb") as wf:
-                channels = wf.getnchannels()
-                sample_rate = wf.getframerate()
-                sample_width = wf.getsampwidth()
-                if sample_width != 2:
-                    raise RuntimeError(f"Unsupported WAV sample width: {sample_width}")
+        wav_bytes = audio_bytes
+    else:
+        if len(audio_bytes) % 2 != 0:
+            raise RuntimeError("Deepgram payload is not WAV or linear16 PCM")
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate_hint)
+            wf.writeframes(audio_bytes)
+        wav_bytes = buf.getvalue()
 
-                with sd.RawOutputStream(
-                    samplerate=sample_rate,
-                    channels=channels,
-                    dtype="int16",
-                    blocksize=4096,
-                ) as stream:
-                    while not _cancel_event.is_set():
-                        frames = wf.readframes(4096)
-                        if not frames:
-                            break
-                        stream.write(frames)
-        return
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(wav_bytes)
+        tmp_path = f.name
 
-    # Fallback: raw linear16 PCM payload
-    if len(audio_bytes) % 2 != 0:
-        raise RuntimeError("Deepgram audio payload is not WAV or linear16 PCM")
-    with sd.RawOutputStream(
-        samplerate=sample_rate_hint,
-        channels=1,
-        dtype="int16",
-        blocksize=4096,
-    ) as stream:
-        idx = 0
-        step = 8192
-        total = len(audio_bytes)
-        while idx < total and not _cancel_event.is_set():
-            stream.write(audio_bytes[idx : idx + step])
-            idx += step
+    try:
+        if _cancel_event.is_set():
+            return
+        sys_name = platform.system()
+        if sys_name == "Windows":
+            import winsound
+            winsound.PlaySound(tmp_path, winsound.SND_FILENAME)
+        elif sys_name == "Darwin":
+            subprocess.run(["afplay", tmp_path], check=False)
+        else:
+            # Linux: try aplay, then paplay, then ffplay
+            for player in ("aplay", "paplay", "ffplay -nodisp -autoexit"):
+                cmd = player.split() + [tmp_path]
+                if shutil.which(cmd[0]):
+                    subprocess.run(cmd, check=False)
+                    break
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 async def _speak_deepgram(text: str) -> None:
@@ -355,10 +356,14 @@ def _get_kokoro_pipeline():
     global _kokoro_pipeline
     with _kokoro_lock:
         if _kokoro_pipeline is None:
+            from pathlib import Path
             from kokoro_onnx import Kokoro
 
-            # Downloads model + voices automatically on first call
-            _kokoro_pipeline = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
+            cache = Path.home() / ".cache" / "kokoro-onnx"
+            cache.mkdir(parents=True, exist_ok=True)
+            model_path = cache / "kokoro-v1.0.onnx"
+            voices_path = cache / "voices-v1.0.bin"
+            _kokoro_pipeline = Kokoro(str(model_path), str(voices_path))
         return _kokoro_pipeline
 
 
@@ -396,53 +401,67 @@ def _kokoro_generate_thread(text: str, chunk_q: queue.Queue) -> None:
 
 
 def _play_numpy_from_queue(chunk_q: queue.Queue) -> None:
-    """
-    Play int16 numpy arrays from queue via sounddevice.
-    Waits for first chunk to determine sample rate, then opens stream.
-    """
-    stream = None
+    """Collect all int16 chunks then play via temp WAV (avoids WDM-KS -9999)."""
+    import tempfile, os, subprocess, shutil
+    chunks = []
+    sample_rate = 24000
     try:
-        if sd is None:
-            raise RuntimeError(_SOUNDDEVICE_IMPORT_ERROR or "sounddevice unavailable")
-        # Drain the queue: first item determines stream params
         while True:
             if _cancel_event.is_set():
                 return
             try:
                 item = chunk_q.get(timeout=15.0)
             except queue.Empty:
-                return
-
+                break
             if item is None:
-                return
+                break
             if isinstance(item, Exception):
                 raise item
-            # Sentinel tuple (None, sample_rate) ends the stream gracefully
             if isinstance(item, tuple) and item[0] is None:
-                return
+                if item[1]:
+                    sample_rate = item[1]
+                break
+            chunks.append(item)
+    except Exception as e:
+        if not _cancel_event.is_set():
+            log.error(f"Kokoro playback error: {e}")
+        return
 
-            # item is a numpy int16 array
-            if stream is None:
-                # Open stream with kokoro-onnx default rate (24kHz)
-                stream = sd.RawOutputStream(
-                    samplerate=24000,
-                    channels=1,
-                    dtype="int16",
-                    blocksize=4096,
-                )
-                stream.start()
+    if not chunks or _cancel_event.is_set():
+        return
 
-            stream.write(item.tobytes())
+    audio_bytes = b"".join(c.tobytes() for c in chunks)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio_bytes)
+    wav_bytes = buf.getvalue()
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(wav_bytes)
+        tmp_path = f.name
+    try:
+        sys_name = platform.system()
+        if sys_name == "Windows":
+            import winsound
+            winsound.PlaySound(tmp_path, winsound.SND_FILENAME)
+        elif sys_name == "Darwin":
+            subprocess.run(["afplay", tmp_path], check=False)
+        else:
+            for player in (["aplay"], ["paplay"], ["ffplay", "-nodisp", "-autoexit"]):
+                if shutil.which(player[0]):
+                    subprocess.run(player + [tmp_path], check=False)
+                    break
     except Exception as e:
         if not _cancel_event.is_set():
             log.error(f"Kokoro playback error: {e}")
     finally:
-        if stream is not None:
-            try:
-                stream.stop()
-                stream.close()
-            except Exception:
-                pass
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 async def _speak_kokoro(text: str) -> None:
@@ -469,19 +488,31 @@ async def _speak_kokoro(text: str) -> None:
 
 
 async def _speak_system(text: str) -> None:
-    """System TTS fallback: Windows SAPI or macOS `say`."""
-    if platform.system() == "Darwin":
-        safe = text.replace('"', "")
+    """System TTS fallback: macOS say / Linux spd-say|espeak / Windows SAPI."""
+    sys = platform.system()
+    safe = text.replace('"', "'")
+    if sys == "Darwin":
         cmd = f'say "{safe}"'
+    elif sys == "Linux":
+        # Try speech-dispatcher first (most distros), then espeak
+        import shutil
+        if shutil.which("spd-say"):
+            cmd = f'spd-say -w "{safe}"'
+        elif shutil.which("espeak"):
+            cmd = f'espeak "{safe}"'
+        elif shutil.which("festival"):
+            cmd = f'echo "{safe}" | festival --tts'
+        else:
+            log.warning("No system TTS found on Linux (install espeak or speech-dispatcher)")
+            return
     else:
-        # Escape for PowerShell string
-        safe = text.replace("'", "''").replace('"', '`"')
+        ps_safe = text.replace("'", "''").replace('"', '`"')
         cmd = (
             'PowerShell -NoProfile -Command "'
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             "$s.Rate = 1; "
-            f"$s.Speak('{safe}')\""
+            f"$s.Speak('{ps_safe}')\""
         )
     proc = await asyncio.create_subprocess_shell(
         cmd,

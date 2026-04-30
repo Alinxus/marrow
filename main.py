@@ -610,6 +610,265 @@ _asyncio_loop: Optional[asyncio.AbstractEventLoop] = None
 _shutdown_event: Optional[asyncio.Event] = None
 
 
+# ─── Shared helper functions (used by _main_async and _execute_user_task) ─────
+
+
+def _is_runtime_status_question(text: str) -> bool:
+    low = (text or "").lower()
+    patterns = (
+        "are you watching",
+        "are you observing",
+        "are you listening",
+        "continuous",
+        "continuously",
+        "turn based",
+        "turn-based",
+        "proactive by default",
+        "always watching",
+    )
+    return any(p in low for p in patterns)
+
+
+def _runtime_status_reply() -> str:
+    screen_age = db.get_last_screenshot_age_seconds()
+    last_interrupt_age = db.get_last_interruption_age_seconds()
+    snap = db.get_runtime_snapshot()
+    audio = snap.get("audio_capture", {})
+
+    if screen_age is None:
+        screen_line = "I am configured for continuous screen observation, but I don't have a screenshot sample yet."
+    elif screen_age <= 60:
+        screen_line = "Yes - I am continuously watching your screen right now."
+    elif screen_age <= 180:
+        screen_line = "I am configured to watch continuously, but screen capture is delayed right now."
+    else:
+        screen_line = "I am configured to watch continuously, but screen capture is stale right now, so context may lag."
+
+    audio_status = audio.get("status")
+    if audio_status:
+        audio_line = f"Audio capture status is {audio_status}."
+    else:
+        audio_line = (
+            "Audio capture is enabled by config."
+            if config.AUDIO_ENABLED
+            else "Audio capture is disabled by config."
+        )
+
+    if last_interrupt_age is None:
+        proactive_line = (
+            "No proactive interruption has been emitted yet in this run."
+        )
+    else:
+        proactive_line = f"Last proactive interruption was {int(last_interrupt_age)} seconds ago."
+
+    return f"{screen_line} {audio_line} {proactive_line}"
+
+
+def _compose_action_result_reply(action_result: str) -> str:
+    txt = (action_result or "").strip()
+    if not txt:
+        return "Done."
+    low = txt.lower()
+    if low.startswith("[error]") or "failed" in low:
+        return f"I tried it, but it failed: {txt[:180]}"
+    first_line = txt.splitlines()[0].strip()
+    if len(first_line) > 180:
+        first_line = first_line[:180] + "..."
+    return f"Done. {first_line}"
+
+
+def _runtime_status_facts() -> str:
+    """Data-backed runtime facts to ground conversational responses."""
+    parts = [
+        "[Runtime status]",
+        "- Observation mode defaults to continuous background capture.",
+    ]
+
+    try:
+        age = db.get_last_screenshot_age_seconds()
+        if age is None:
+            parts.append("- Screen capture: no samples yet.")
+        elif age <= 60:
+            parts.append("- Screen capture: active.")
+        elif age <= 180:
+            parts.append("- Screen capture: degraded (older than 60s).")
+        else:
+            parts.append("- Screen capture: stale (>180s).")
+    except Exception:
+        parts.append("- Screen capture: unknown.")
+
+    try:
+        snap = db.get_runtime_snapshot()
+        a = snap.get("audio_capture")
+        if a:
+            parts.append(
+                f"- Audio capture: {a.get('status', 'unknown')} ({a.get('detail', '')[:90]})."
+            )
+        else:
+            parts.append(
+                f"- Audio capture: {'enabled' if config.AUDIO_ENABLED else 'disabled'} by config."
+            )
+    except Exception:
+        parts.append("- Audio capture: unknown.")
+
+    parts.append(
+        "- Never claim observe-on-demand-only or turn-based-only behavior unless runtime state above says capture is stale/disabled."
+    )
+    return "\n".join(parts)
+
+
+def _parse_json_object(text: str) -> dict:
+    raw = (text or "").strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+    try:
+        return json.loads(raw[start : end + 1])
+    except Exception:
+        return {}
+
+
+def _looks_like_action_request(text: str) -> bool:
+    low = (text or "").strip().lower()
+    if not low:
+        return False
+    if low.startswith(("what", "why", "how", "when", "who", "where")):
+        return False
+    action_prefixes = (
+        "open ",
+        "close ",
+        "start ",
+        "stop ",
+        "run ",
+        "create ",
+        "write ",
+        "search ",
+        "find ",
+        "check ",
+        "send ",
+        "schedule ",
+        "remind ",
+        "call ",
+        "email ",
+        "message ",
+        "summarize ",
+    )
+    if low.startswith(action_prefixes):
+        return True
+    if low.startswith(
+        (
+            "can you ",
+            "could you ",
+            "would you ",
+            "please ",
+            "go ahead and ",
+            "i need you to ",
+            "help me ",
+            "let's ",
+            "lets ",
+        )
+    ):
+        return True
+    return False
+
+
+def _heuristic_intent_decision(user_text: str) -> dict:
+    low = (user_text or "").strip().lower()
+    if not low:
+        return {
+            "intent": "ignore",
+            "confidence": 1.0,
+            "action_request": "",
+            "reply": "",
+            "reason": "empty",
+        }
+    if _looks_like_action_request(user_text):
+        return {
+            "intent": "action",
+            "confidence": 0.72,
+            "action_request": user_text.strip(),
+            "reply": "",
+            "reason": "heuristic_action_request",
+        }
+    if len(low.split()) <= 2 and low in {"yes", "no", "okay", "ok", "sure"}:
+        return {
+            "intent": "conversation",
+            "confidence": 0.8,
+            "action_request": "",
+            "reply": "",
+            "reason": "short_followup",
+        }
+    return {
+        "intent": "conversation",
+        "confidence": 0.6,
+        "action_request": "",
+        "reply": "",
+        "reason": "default_conversation",
+    }
+
+
+async def _classify_voice_turn(user_text: str, context_hint: str = "") -> dict:
+    """Semantic router for voice turns: action, conversation, clarify, or ignore."""
+    heuristic = _heuristic_intent_decision(user_text)
+    try:
+        from brain.llm import get_client
+
+        llm = get_client()
+        if llm.provider == "none":
+            return heuristic
+
+        prompt = f"""Classify this live voice utterance for a desktop assistant.
+
+Return strict JSON only with this schema:
+{{
+  "intent": "action" | "conversation" | "clarify" | "ignore",
+  "confidence": 0.0,
+  "action_request": "<normalized task to execute or empty>",
+  "reply": "<only fill when intent is clarify or ignore; otherwise empty>",
+  "reason": "<very short>"
+}}
+
+Choose:
+- "action" when the user is asking the assistant to do something in the world, on the computer, on the web, in apps, or by using tools.
+- "conversation" when the user mainly wants an answer, advice, explanation, status, brainstorming, or back-and-forth talk.
+- "clarify" when an action is intended but key details are missing or ambiguous, and provide one short spoken follow-up in "reply".
+- "ignore" only for accidental/noise/filler, with a short reply only if truly useful.
+
+Rules:
+- Prefer "action" for natural requests like "can you...", "i need you to...", "help me...", "let's...", and direct imperatives.
+- Prefer "conversation" for questions that mainly seek information or judgment.
+- If the request references something implicit like "that tab" or "it", use context when possible. If still ambiguous, choose "clarify".
+- Keep "action_request" concise but faithful to the user's intent.
+- Do not be overly cautious: if the likely meaning is actionable, choose action.
+
+Context:
+{(context_hint or "None")[:1400]}
+
+Utterance:
+{user_text}
+"""
+        resp = await llm.create(
+            messages=[{"role": "user", "content": prompt}],
+            model_type="scoring",
+            max_tokens=220,
+        )
+        data = _parse_json_object(resp.text)
+        intent = str(data.get("intent", "")).strip().lower()
+        if intent not in {"action", "conversation", "clarify", "ignore"}:
+            return heuristic
+        return {
+            "intent": intent,
+            "confidence": float(data.get("confidence", heuristic["confidence"]) or 0.0),
+            "action_request": str(data.get("action_request", "") or "").strip(),
+            "reply": str(data.get("reply", "") or "").strip(),
+            "reason": str(data.get("reason", "") or "").strip(),
+        }
+    except Exception as exc:
+        log.debug(f"Voice intent classifier fallback: {exc}")
+        return heuristic
+
+
 def _request_shutdown(*_) -> None:
     """Thread-safe shutdown from any context."""
     if _asyncio_loop and _shutdown_event:
@@ -676,255 +935,6 @@ async def _main_async() -> None:
         return False
 
     set_confirm_callback(_approval_callback)
-
-    # ── On-demand activation ──────────────────────────────────────────────
-    def _is_runtime_status_question(text: str) -> bool:
-        low = (text or "").lower()
-        patterns = (
-            "are you watching",
-            "are you observing",
-            "are you listening",
-            "continuous",
-            "continuously",
-            "turn based",
-            "turn-based",
-            "proactive by default",
-            "always watching",
-        )
-        return any(p in low for p in patterns)
-
-    def _runtime_status_reply() -> str:
-        screen_age = db.get_last_screenshot_age_seconds()
-        last_interrupt_age = db.get_last_interruption_age_seconds()
-        snap = db.get_runtime_snapshot()
-        audio = snap.get("audio_capture", {})
-
-        if screen_age is None:
-            screen_line = "I am configured for continuous screen observation, but I don't have a screenshot sample yet."
-        elif screen_age <= 60:
-            screen_line = "Yes - I am continuously watching your screen right now."
-        elif screen_age <= 180:
-            screen_line = "I am configured to watch continuously, but screen capture is delayed right now."
-        else:
-            screen_line = "I am configured to watch continuously, but screen capture is stale right now, so context may lag."
-
-        audio_status = audio.get("status")
-        if audio_status:
-            audio_line = f"Audio capture status is {audio_status}."
-        else:
-            audio_line = (
-                "Audio capture is enabled by config."
-                if config.AUDIO_ENABLED
-                else "Audio capture is disabled by config."
-            )
-
-        if last_interrupt_age is None:
-            proactive_line = (
-                "No proactive interruption has been emitted yet in this run."
-            )
-        else:
-            proactive_line = f"Last proactive interruption was {int(last_interrupt_age)} seconds ago."
-
-        return f"{screen_line} {audio_line} {proactive_line}"
-
-    def _compose_action_result_reply(action_result: str) -> str:
-        txt = (action_result or "").strip()
-        if not txt:
-            return "Done."
-        low = txt.lower()
-        if low.startswith("[error]") or "failed" in low:
-            return f"I tried it, but it failed: {txt[:180]}"
-        first_line = txt.splitlines()[0].strip()
-        if len(first_line) > 180:
-            first_line = first_line[:180] + "..."
-        return f"Done. {first_line}"
-
-    def _runtime_status_facts() -> str:
-        """Data-backed runtime facts to ground conversational responses."""
-        parts = [
-            "[Runtime status]",
-            "- Observation mode defaults to continuous background capture.",
-        ]
-
-        try:
-            age = db.get_last_screenshot_age_seconds()
-            if age is None:
-                parts.append("- Screen capture: no samples yet.")
-            elif age <= 60:
-                parts.append("- Screen capture: active.")
-            elif age <= 180:
-                parts.append("- Screen capture: degraded (older than 60s).")
-            else:
-                parts.append("- Screen capture: stale (>180s).")
-        except Exception:
-            parts.append("- Screen capture: unknown.")
-
-        try:
-            snap = db.get_runtime_snapshot()
-            a = snap.get("audio_capture")
-            if a:
-                parts.append(
-                    f"- Audio capture: {a.get('status', 'unknown')} ({a.get('detail', '')[:90]})."
-                )
-            else:
-                parts.append(
-                    f"- Audio capture: {'enabled' if config.AUDIO_ENABLED else 'disabled'} by config."
-                )
-        except Exception:
-            parts.append("- Audio capture: unknown.")
-
-        parts.append(
-            "- Never claim observe-on-demand-only or turn-based-only behavior unless runtime state above says capture is stale/disabled."
-        )
-        return "\n".join(parts)
-
-    def _parse_json_object(text: str) -> dict:
-        raw = (text or "").strip()
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            return {}
-        try:
-            return json.loads(raw[start : end + 1])
-        except Exception:
-            return {}
-
-    def _looks_like_action_request(text: str) -> bool:
-        low = (text or "").strip().lower()
-        if not low:
-            return False
-        if low.startswith(("what", "why", "how", "when", "who", "where")):
-            return False
-        action_prefixes = (
-            "open ",
-            "close ",
-            "start ",
-            "stop ",
-            "run ",
-            "create ",
-            "write ",
-            "search ",
-            "find ",
-            "check ",
-            "send ",
-            "schedule ",
-            "remind ",
-            "call ",
-            "email ",
-            "message ",
-            "summarize ",
-        )
-        if low.startswith(action_prefixes):
-            return True
-        if low.startswith(
-            (
-                "can you ",
-                "could you ",
-                "would you ",
-                "please ",
-                "go ahead and ",
-                "i need you to ",
-                "help me ",
-                "let's ",
-                "lets ",
-            )
-        ):
-            return True
-        return False
-
-    def _heuristic_intent_decision(user_text: str) -> dict:
-        low = (user_text or "").strip().lower()
-        if not low:
-            return {
-                "intent": "ignore",
-                "confidence": 1.0,
-                "action_request": "",
-                "reply": "",
-                "reason": "empty",
-            }
-        if _looks_like_action_request(user_text):
-            return {
-                "intent": "action",
-                "confidence": 0.72,
-                "action_request": user_text.strip(),
-                "reply": "",
-                "reason": "heuristic_action_request",
-            }
-        if len(low.split()) <= 2 and low in {"yes", "no", "okay", "ok", "sure"}:
-            return {
-                "intent": "conversation",
-                "confidence": 0.8,
-                "action_request": "",
-                "reply": "",
-                "reason": "short_followup",
-            }
-        return {
-            "intent": "conversation",
-            "confidence": 0.6,
-            "action_request": "",
-            "reply": "",
-            "reason": "default_conversation",
-        }
-
-    async def _classify_voice_turn(user_text: str, context_hint: str = "") -> dict:
-        """Semantic router for voice turns: action, conversation, clarify, or ignore."""
-        heuristic = _heuristic_intent_decision(user_text)
-        try:
-            from brain.llm import get_client
-
-            llm = get_client()
-            if llm.provider == "none":
-                return heuristic
-
-            prompt = f"""Classify this live voice utterance for a desktop assistant.
-
-Return strict JSON only with this schema:
-{{
-  "intent": "action" | "conversation" | "clarify" | "ignore",
-  "confidence": 0.0,
-  "action_request": "<normalized task to execute or empty>",
-  "reply": "<only fill when intent is clarify or ignore; otherwise empty>",
-  "reason": "<very short>"
-}}
-
-Choose:
-- "action" when the user is asking the assistant to do something in the world, on the computer, on the web, in apps, or by using tools.
-- "conversation" when the user mainly wants an answer, advice, explanation, status, brainstorming, or back-and-forth talk.
-- "clarify" when an action is intended but key details are missing or ambiguous, and provide one short spoken follow-up in "reply".
-- "ignore" only for accidental/noise/filler, with a short reply only if truly useful.
-
-Rules:
-- Prefer "action" for natural requests like "can you...", "i need you to...", "help me...", "let's...", and direct imperatives.
-- Prefer "conversation" for questions that mainly seek information or judgment.
-- If the request references something implicit like "that tab" or "it", use context when possible. If still ambiguous, choose "clarify".
-- Keep "action_request" concise but faithful to the user's intent.
-- Do not be overly cautious: if the likely meaning is actionable, choose action.
-
-Context:
-{(context_hint or "None")[:1400]}
-
-Utterance:
-{user_text}
-"""
-            resp = await llm.create(
-                messages=[{"role": "user", "content": prompt}],
-                model_type="scoring",
-                max_tokens=220,
-            )
-            data = _parse_json_object(resp.text)
-            intent = str(data.get("intent", "")).strip().lower()
-            if intent not in {"action", "conversation", "clarify", "ignore"}:
-                return heuristic
-            return {
-                "intent": intent,
-                "confidence": float(data.get("confidence", heuristic["confidence"]) or 0.0),
-                "action_request": str(data.get("action_request", "") or "").strip(),
-                "reply": str(data.get("reply", "") or "").strip(),
-                "reason": str(data.get("reason", "") or "").strip(),
-            }
-        except Exception as exc:
-            log.debug(f"Voice intent classifier fallback: {exc}")
-            return heuristic
 
     async def _handle_conversation_turn(user_text: str) -> None:
         """Low-latency conversational turn handler (voice-first back-and-forth)."""
@@ -1371,8 +1381,11 @@ async def _execute_user_task(text: str) -> None:
 
         ctx = db.get_recent_context(30)
         hint = _build_context_summary(ctx)
-        runtime_facts = _runtime_status_facts()
-        hint = f"{runtime_facts}\n\n{hint}" if hint else runtime_facts
+        try:
+            runtime_facts = _runtime_status_facts()
+            hint = f"{runtime_facts}\n\n{hint}" if hint else runtime_facts
+        except Exception:
+            pass
 
         if _is_runtime_status_question(text):
             bridge.state_changed.emit("thinking")

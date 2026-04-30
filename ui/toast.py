@@ -238,10 +238,16 @@ class ToastManager:
         self._pending_pos.timeout.connect(self._reposition_all)
 
     def show(self, title: str, body: str, urgency: int = 3,
-             action_label: str = "", action_callback=None) -> None:
-        if len(self._toasts) >= MAX_TOASTS:
-            oldest = self._toasts[0]
-            oldest.closed.emit(oldest)
+             action_label: str = "", action_callback=None,
+             replace: bool = False) -> None:
+        if replace or len(self._toasts) >= MAX_TOASTS:
+            for card in list(self._toasts):
+                card.closed.emit(card)
+            self._toasts.clear()
+
+        # Keep toast body concise — long AI observations get truncated
+        if len(body) > 180:
+            body = body[:177] + "…"
 
         card = ToastCard(title, body, urgency, action_label, action_callback)
         card.closed.connect(self._on_closed)

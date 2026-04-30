@@ -3,4 +3,7 @@
 2026-04-19 18:28:41.874 screen.py[169] _get_active_window -> Find Control Timeout(10s): {ControlType: EditControl}
 2026-04-19 18:29:02.100 screen.py[169] _get_active_window -> 2026-04-19 20:23:26.587 screen.py[169] _get_active_window -> Find Control Timeout(10s): {ControlType: EditControl}
 2026-04-19 20:23:46.190 screen.py[169] _get_active_window -> Find Control Timeout(10s): {ControlType: EditControl}
-2026-04-19 20:24:06.270 screen.py[169] _get_active_window -> 
+2026-04-19 20:24:06.270 screen.py[169] _get_active_window -> 2026-04-28 03:52:33.187 screen.py[169] _get_active_window -> Find Control Timeout(10s): {ControlType: EditControl}
+2026-04-28 03:52:52.723 screen.py[169] _get_active_window -> Find Control Timeout(10s): {ControlType: EditControl}
+2026-04-28 03:53:11.166 screen.py[169] _get_active_window -> Find Control Timeout(10s): {ControlType: EditControl}
+2026-04-28 03:53:31.475 screen.py[169] _get_active_window -> 

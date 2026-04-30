@@ -527,7 +527,7 @@ Reasoning: {reasoning}
 Context: {context}
 
 Return strict JSON only:
-{"approved": true|false, "confidence": 0.0-1.0, "why": "one short sentence"}
+{{"approved": true|false, "confidence": 0.0-1.0, "why": "one short sentence"}}
 
 Imagine the user is busy and sees this interrupt.
 Approve only if they'd think: "glad I saw this, this changes what I do next."

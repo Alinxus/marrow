@@ -311,8 +311,8 @@ class AudioCaptureService:
             language="en",
             vad_filter=True,
             vad_parameters={
-                "threshold": 0.4,
-                "min_speech_duration_ms": 200,
+                "threshold": 0.6,
+                "min_speech_duration_ms": 300,
                 "min_silence_duration_ms": 500,
             },
             beam_size=5,
@@ -320,8 +320,7 @@ class AudioCaptureService:
             temperature=0.0,
         )
         text = " ".join(s.text.strip() for s in segments).strip()
-        # Only skip if language confidence is extremely low (hallucinated noise)
-        if text and info.language_probability < 0.3:
+        if text and info.language_probability < 0.6:
             log.debug(
                 f"Very low language confidence ({info.language_probability:.2f}), skipping"
             )
