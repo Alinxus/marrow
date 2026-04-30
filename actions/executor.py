@@ -436,19 +436,34 @@ MARROW_TOOLS = [
     # Application control
     {
         "name": "app_launch",
-        "description": "Launch an application",
+        "description": (
+            "Launch any application, folder, file, or URL on the user's computer. "
+            "Pass the app name exactly as the user said it — e.g. 'file explorer', 'chrome', "
+            "'notepad', 'spotify', 'discord', 'vs code', 'calculator', 'terminal'. "
+            "For URLs pass the full URL. For files pass the full path. "
+            "Always prefer this tool over run_command for opening apps."
+        ),
         "input_schema": {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "arguments": {"type": "string"}},
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "App name ('chrome', 'file explorer', 'notepad'), full exe path, file path, or URL."
+                },
+                "arguments": {"type": "string"}
+            },
             "required": ["path"],
         },
     },
     {
         "name": "app_launch_verified",
-        "description": "Launch an application and verify it started.",
+        "description": "Launch an application and verify it started. Use for important launches where confirmation matters.",
         "input_schema": {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "arguments": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string", "description": "App name, exe path, or URL."},
+                "arguments": {"type": "string"}
+            },
             "required": ["path"],
         },
     },

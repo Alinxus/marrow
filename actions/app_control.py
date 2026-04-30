@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import os
 import platform
 import shutil
 import subprocess
@@ -393,71 +392,58 @@ async def app_launch(path: str, arguments: str = "") -> str:
             return _err("No application path provided")
 
         if _is_windows():
-            import shutil, os
+            import shutil, ctypes
 
-            # Normalize common names
-            _aliases = {
-                "explorer": "explorer.exe",
-                "file explorer": "explorer.exe",
-                "files": "explorer.exe",
-                "chrome": "chrome.exe",
-                "google chrome": "chrome.exe",
-                "edge": "msedge.exe",
-                "microsoft edge": "msedge.exe",
-                "firefox": "firefox.exe",
-                "notepad": "notepad.exe",
-                "calculator": "calc.exe",
-                "calc": "calc.exe",
-                "cmd": "cmd.exe",
-                "terminal": "wt.exe",
-                "windows terminal": "wt.exe",
-                "word": "winword.exe",
-                "excel": "excel.exe",
-                "powerpoint": "powerpnt.exe",
-                "outlook": "outlook.exe",
-                "vscode": "code.exe",
-                "vs code": "code.exe",
-                "spotify": "spotify.exe",
-                "discord": "discord.exe",
-                "slack": "slack.exe",
-                "zoom": "zoom.exe",
-                "teams": "teams.exe",
+            # Resolve multi-word friendly names to shell tokens Windows can resolve
+            _tokens = {
+                "file explorer": "explorer", "files": "explorer",
+                "this pc": "explorer", "my computer": "explorer",
+                "google chrome": "chrome", "microsoft edge": "msedge",
+                "command prompt": "cmd", "windows terminal": "wt",
+                "vs code": "code", "visual studio code": "code",
+                "task manager": "taskmgr", "control panel": "control",
+                "windows settings": "ms-settings:", "settings": "ms-settings:",
+                "microsoft store": "ms-windows-store:", "store": "ms-windows-store:",
             }
-            resolved = _aliases.get(target.lower(), target)
+            shell_target = _tokens.get(target.lower(), target)
 
-            # 1. os.startfile — uses Windows shell, works for anything registered
+            # 1. ShellExecuteW — Windows shell handles paths, URLs, ms- URIs, registered apps
             try:
-                os.startfile(resolved)
-                return f"Launched: {resolved}"
+                ret = ctypes.windll.shell32.ShellExecuteW(
+                    None, "open", shell_target,
+                    " ".join(args) if args else None,
+                    None, 1
+                )
+                if ret > 32:  # >32 = success
+                    return f"Launched: {shell_target}"
             except Exception:
                 pass
 
-            # 2. cmd /c start — Windows shell resolution (Start Menu, PATH, associations)
+            # 2. cmd /c start — resolves Start Menu entries and PATH
             try:
                 subprocess.Popen(
-                    ["cmd", "/c", "start", "", resolved] + args,
+                    ["cmd", "/c", "start", "", shell_target] + args,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    creationflags=0x08000000,
                 )
-                return f"Launched: {resolved}"
+                return f"Launched: {shell_target}"
             except Exception:
                 pass
 
-            # 3. Direct Popen if it's in PATH
-            if shutil.which(resolved):
-                DETACHED = 0x00000008
-                CREATE_NEW_PROCESS_GROUP = 0x00000200
+            # 3. Direct Popen if in PATH
+            if shutil.which(shell_target):
                 subprocess.Popen(
-                    [resolved] + args,
-                    creationflags=DETACHED | CREATE_NEW_PROCESS_GROUP,
+                    [target] + args,
+                    creationflags=0x00000008 | 0x00000200,
                     close_fds=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                return f"Launched: {resolved}"
+                return f"Launched: {target}"
 
             # 4. PowerShell fallback
-            ps = f'Start-Process "{resolved}"' + (
+            ps = f'Start-Process "{shell_target}"' + (
                 f' -ArgumentList "{arguments}"' if arguments else ""
             )
             return _ps_run(ps)

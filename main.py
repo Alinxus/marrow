@@ -669,12 +669,19 @@ def _compose_action_result_reply(action_result: str) -> str:
     if not txt:
         return "Done."
     low = txt.lower()
-    if low.startswith("[error]") or "failed" in low:
-        return f"I tried it, but it failed: {txt[:180]}"
+    # Only treat as failure if the result clearly signals a hard error —
+    # not just because the word "failed" appears somewhere in a long result
+    hard_fail = (
+        low.startswith("[error]")
+        or low.startswith("error:")
+        or (len(txt) < 120 and ("failed" in low or "could not" in low or "unable to" in low))
+    )
+    if hard_fail:
+        return f"Couldn't do that: {txt[:180]}"
     first_line = txt.splitlines()[0].strip()
     if len(first_line) > 180:
         first_line = first_line[:180] + "..."
-    return f"Done. {first_line}"
+    return f"Done. {first_line}" if first_line else "Done."
 
 
 def _runtime_status_facts() -> str:
@@ -893,6 +900,35 @@ async def _main_async() -> None:
     init_scheduler()
     _enforce_default_behavior_profile()
 
+    # ── WebSocket bridge for Tauri frontend ───────────────────────────────
+    from ui.ws_bridge import start_server as _ws_start, broadcast as _ws_broadcast
+
+    async def _ws_command_handler(msg: dict) -> None:
+        action = msg.get("action")
+        payload = msg.get("payload", "")
+        if action == "text_task_submitted" and payload:
+            from ui.bridge import get_bridge as _gb
+            try:
+                _gb().text_task_submitted.emit(str(payload))
+            except Exception:
+                asyncio.ensure_future(_execute_user_task(str(payload)))
+        elif action == "ask_requested":
+            from ui.bridge import get_bridge as _gb
+            try:
+                _gb().ask_requested.emit()
+            except Exception:
+                pass
+        elif action == "approval_response":
+            from ui.bridge import get_bridge as _gb
+            try:
+                _gb().respond_to_approval(msg.get("callback_id", ""), bool(msg.get("approved")))
+            except Exception:
+                pass
+
+    from ui.ws_bridge import set_command_handler as _ws_set_handler
+    _ws_set_handler(_ws_command_handler)
+    await _ws_start()
+
     audio_service = AudioCaptureService()
     interrupt_engine = InterruptDecisionEngine()
 
@@ -910,6 +946,12 @@ async def _main_async() -> None:
                 getattr(_bridge, signal_name).emit(*args)
             except Exception:
                 pass
+        # Mirror every signal to the Tauri WebSocket frontend
+        try:
+            data = args[0] if len(args) == 1 else list(args)
+            asyncio.ensure_future(_ws_broadcast(signal_name, data))
+        except Exception:
+            pass
 
     def _trace_audio(message: str):
         _emit("audio_debug", str(message)[:220])
@@ -1402,53 +1444,50 @@ async def _execute_user_task(text: str) -> None:
         # Text box input always executes — skip the voice classifier which
         # defaults to "conversation" and produces useless "I'm here..." replies.
         bridge.state_changed.emit("acting")
-        result = await execute_action(text, context=hint)
+        action_plan = None
+        if config.DEEP_REASONING_ENABLED:
+            try:
+                from brain.execution_engine import prepare_reasoned_action
 
-        if True:  # keep indentation consistent with removed intent block
-            action_plan = None
-            if config.DEEP_REASONING_ENABLED:
-                try:
-                    from brain.execution_engine import prepare_reasoned_action
-
-                    action_plan = await prepare_reasoned_action(
-                        text,
-                        context_hint=hint,
-                        session_id=config.DEEP_REASONING_SESSION_ID,
+                action_plan = await prepare_reasoned_action(
+                    text,
+                    context_hint=hint,
+                    session_id=config.DEEP_REASONING_SESSION_ID,
+                )
+                if action_plan.get("mode") == "clarify":
+                    out = (
+                        action_plan.get("clarifying_question")
+                        or "What exactly should I do?"
                     )
-                    if action_plan.get("mode") == "clarify":
-                        out = (
-                            action_plan.get("clarifying_question")
-                            or "What exactly should I do?"
-                        )
-                        bridge.task_response.emit(out)
-                        bridge.toast_requested.emit(config.MARROW_NAME, out[:200], 4)
-                        return
-                except Exception as exc:
-                    log.debug(f"Reasoned text action planning skipped: {exc}")
-                    action_plan = None
+                    bridge.task_response.emit(out)
+                    return
+            except Exception as exc:
+                log.debug(f"Reasoned text action planning skipped: {exc}")
+                action_plan = None
 
-            if action_plan and action_plan.get("mode") == "complex":
-                from actions.complex_task import execute_complex
+        if action_plan and action_plan.get("mode") == "complex":
+            from actions.complex_task import execute_complex
 
-                goal = (action_plan.get("goal") or text).strip() or text
-                result = await execute_complex(goal, context=hint, verify=True)
-            elif action_plan and action_plan.get("action_request"):
-                result = await execute_action(action_plan["action_request"], context=hint)
+            goal = (action_plan.get("goal") or text).strip() or text
+            result = await execute_complex(goal, context=hint, verify=True)
+        elif action_plan and action_plan.get("action_request"):
+            result = await execute_action(action_plan["action_request"], context=hint)
+        else:
+            result = await execute_action(text, context=hint)
 
-            if action_plan:
-                try:
-                    from brain.execution_engine import finalize_reasoned_action
+        if action_plan:
+            try:
+                from brain.execution_engine import finalize_reasoned_action
 
-                    await finalize_reasoned_action(
-                        action_plan,
-                        result,
-                        session_id=config.DEEP_REASONING_SESSION_ID,
-                    )
-                except Exception as exc:
-                    log.debug(f"Reasoned text action finalize skipped: {exc}")
-            out = _compose_action_result_reply(result)
+                await finalize_reasoned_action(
+                    action_plan,
+                    result,
+                    session_id=config.DEEP_REASONING_SESSION_ID,
+                )
+            except Exception as exc:
+                log.debug(f"Reasoned text action finalize skipped: {exc}")
 
-        out = (out or "Done.").strip()
+        out = (_compose_action_result_reply(result) or "Done.").strip()
         bridge.task_response.emit(out)
     except Exception as e:
         err = f"Error: {e}"
