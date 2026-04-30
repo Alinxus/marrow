@@ -1371,21 +1371,18 @@ async def _execute_user_task(text: str) -> None:
         if mission_result is not None:
             bridge.state_changed.emit("acting")
             bridge.task_response.emit(mission_result)
-            bridge.toast_requested.emit(config.MARROW_NAME, mission_result[:200], 4)
             return
 
         swarm_result = await _handle_swarm_command(text)
         if swarm_result is not None:
             bridge.state_changed.emit("acting")
             bridge.task_response.emit(swarm_result)
-            bridge.toast_requested.emit(config.MARROW_NAME, swarm_result[:200], 4)
             return
 
         slash_result = _handle_slash_command(text)
         if slash_result is not None:
             bridge.state_changed.emit("acting")
             bridge.task_response.emit(slash_result)
-            bridge.toast_requested.emit(config.MARROW_NAME, slash_result[:200], 4)
             return
 
         ctx = db.get_recent_context(30)
@@ -1453,7 +1450,6 @@ async def _execute_user_task(text: str) -> None:
 
         out = (out or "Done.").strip()
         bridge.task_response.emit(out)
-        bridge.toast_requested.emit(config.MARROW_NAME, out[:200], 4)
     except Exception as e:
         err = f"Error: {e}"
         log.error(f"User task failed: {e}")

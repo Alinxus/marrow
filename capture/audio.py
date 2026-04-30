@@ -47,7 +47,7 @@ log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 CHUNK_SECONDS = max(
-    2, int(getattr(config, "AUDIO_ACTIVE_CHUNK_SECONDS", config.AUDIO_CHUNK_SECONDS))
+    5, int(getattr(config, "AUDIO_ACTIVE_CHUNK_SECONDS", config.AUDIO_CHUNK_SECONDS))
 )
 
 # Wake word detection
