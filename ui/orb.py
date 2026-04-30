@@ -21,15 +21,15 @@ import logging
 import math
 from typing import Optional
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QPoint, QPointF, QRectF, QSize, Qt, QTimer,
-    pyqtSignal,
+    Signal,
 )
-from PyQt6.QtGui import (
+from PySide6.QtGui import (
     QColor, QCursor, QFont, QPainter, QPainterPath,
     QRadialGradient,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QMenu, QWidget,
 )
 
@@ -58,9 +58,9 @@ class MarrowOrb(QWidget):
     Emits dashboard_toggle when left-clicked (not after drag).
     """
 
-    dashboard_toggle = pyqtSignal()
-    settings_requested = pyqtSignal()
-    quit_requested = pyqtSignal()
+    dashboard_toggle = Signal()
+    settings_requested = Signal()
+    quit_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(

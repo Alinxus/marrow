@@ -41,15 +41,15 @@ import logging
 import time
 from typing import Optional
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt,
-    QTimer, pyqtProperty, pyqtSignal, QPointF,
+    QTimer, pyqtProperty, Signal, QPointF,
 )
-from PyQt6.QtGui import (
+from PySide6.QtGui import (
     QColor, QCursor, QFont, QFontDatabase, QLinearGradient,
     QPainter, QPainterPath, QPen, QRadialGradient,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSizePolicy, QSpacerItem, QVBoxLayout, QWidget,
 )
@@ -580,7 +580,7 @@ class MarrowFloatingPanel(QWidget):
     # ── Context menu ─────────────────────────────────────────────────────
 
     def contextMenuEvent(self, event):
-        from PyQt6.QtWidgets import QMenu
+        from PySide6.QtWidgets import QMenu
         menu = QMenu(self)
         menu.setStyleSheet("""
             QMenu {

@@ -10,9 +10,9 @@ Wiring:
 
 import logging
 
-from PyQt6.QtCore import Qt, QRectF, QTimer
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QRectF, QTimer
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,

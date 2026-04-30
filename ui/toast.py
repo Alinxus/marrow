@@ -11,14 +11,14 @@ Usage:
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QAbstractAnimation, QEasingCurve, QPoint, QPropertyAnimation,
     QRectF, QTimer, Qt,
 )
-from PyQt6.QtGui import (
+from PySide6.QtGui import (
     QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QPushButton,
     QVBoxLayout, QWidget,
 )
@@ -52,8 +52,8 @@ TEXT_SEC     = QColor(80,  80,  98)
 class ToastCard(QWidget):
     """One frosted-glass notification card."""
 
-    from PyQt6.QtCore import pyqtSignal
-    closed = pyqtSignal(object)
+    from PySide6.QtCore import Signal
+    closed = Signal(object)
 
     def __init__(self, title: str, body: str, urgency: int = 3,
                  action_label: str = "", action_callback=None, parent=None):

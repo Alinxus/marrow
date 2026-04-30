@@ -17,15 +17,15 @@ import logging
 from typing import Optional
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QAbstractAnimation, QEasingCurve, QPoint, QPropertyAnimation,
     QRectF, QTimer, Qt, QUrl,
 )
-from PyQt6.QtGui import (
+from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QLinearGradient, QPainter,
     QPainterPath, QPen,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -69,8 +69,8 @@ class ClaimCard(QWidget):
     Shows verdict badge + claim + explanation + clickable source chips.
     """
 
-    from PyQt6.QtCore import pyqtSignal
-    closed = pyqtSignal(object)
+    from PySide6.QtCore import Signal
+    closed = Signal(object)
 
     def __init__(self, data: dict, parent=None):
         super().__init__(

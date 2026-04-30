@@ -20,9 +20,9 @@ import urllib.request
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,

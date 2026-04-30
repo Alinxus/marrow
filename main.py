@@ -1523,8 +1523,8 @@ def _build_tray(app, toggle_cb):
     if not config.TRAY_ENABLED:
         return None
     try:
-        from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QBrush
-        from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
+        from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QBrush
+        from PySide6.QtWidgets import QSystemTrayIcon, QMenu
 
         pix = QPixmap(32, 32)
         pix.fill(QColor(0, 0, 0, 0))
@@ -1569,8 +1569,8 @@ def _build_tray(app, toggle_cb):
 
 def _run_qt() -> None:
     """Build and run the Qt application on the main thread."""
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import Qt, QTimer
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt, QTimer
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -1592,6 +1592,14 @@ def _run_qt() -> None:
         backend_thread["t"] = t
 
     QTimer.singleShot(0, _start_backend_once)
+
+    # ── React UI (pywebview-free, uses PySide6 WebEngine) ─────────────────
+    _react_window = None
+    try:
+        from ui.webview_window import create_react_window
+        _react_window = create_react_window(app)
+    except Exception as _rw_err:
+        log.info(f"React window skipped: {_rw_err}")
 
     # ── UI surface selection ───────────────────────────────────────────────
     ui_mode = (config.UI_MODE or "orb").lower()
@@ -1805,10 +1813,8 @@ def main() -> None:
     system = _platform.system()
 
     if system == "Windows":
-        # Qt must own the main thread on Windows.
         _run_qt()
     else:
-        # macOS/Linux: run headless backend; Swift UI (macOS) or terminal connects separately.
         _run_headless()
 
 

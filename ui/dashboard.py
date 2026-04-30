@@ -22,16 +22,16 @@ import logging
 import time
 from typing import Optional
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QPoint,
     QPointF,
     QRectF,
     QRect,
     Qt,
     QTimer,
-    pyqtSignal,
+    Signal,
 )
-from PyQt6.QtGui import (
+from PySide6.QtGui import (
     QColor,
     QFont,
     QLinearGradient,
@@ -40,7 +40,7 @@ from PyQt6.QtGui import (
     QPen,
     QRadialGradient,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
@@ -246,8 +246,8 @@ class ChatBubble(QWidget):
 class NotificationCard(QWidget):
     """Omi-style inline proactive card with open/dismiss affordances."""
 
-    open_requested = pyqtSignal()
-    dismissed = pyqtSignal()
+    open_requested = Signal()
+    dismissed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -383,7 +383,7 @@ class NotificationCard(QWidget):
 class ChatSection(QWidget):
     """Conversation history + text input."""
 
-    task_submitted = pyqtSignal(str)
+    task_submitted = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -687,7 +687,7 @@ class WorkbenchSection(QWidget):
 class MarrowDashboard(QWidget):
     """The full information panel — opened/closed by the orb."""
 
-    settings_requested = pyqtSignal()
+    settings_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(

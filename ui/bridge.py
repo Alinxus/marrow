@@ -25,7 +25,7 @@ import logging
 import threading
 from typing import Any, Callable, Optional
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 log = logging.getLogger(__name__)
 
@@ -40,72 +40,72 @@ class MarrowBridge(QObject):
 
     # ── Backend → UI signals ──────────────────────────────────────────────
     # Marrow's internal state: "idle" | "thinking" | "speaking" | "acting" | "error"
-    state_changed = pyqtSignal(str)
+    state_changed = Signal(str)
 
     # A message was spoken: (text, urgency 1-5)
-    message_spoken = pyqtSignal(str, int)
+    message_spoken = Signal(str, int)
 
     # The screen focus changed: (app_name, window_title)
-    focus_changed = pyqtSignal(str, str)
+    focus_changed = Signal(str, str)
 
     # Reasoning trace update (full JSON dict as string for thread safety)
-    reasoning_update = pyqtSignal(str)
+    reasoning_update = Signal(str)
 
     # World model: list of (type, content) pairs as JSON string
-    world_model_updated = pyqtSignal(str)
+    world_model_updated = Signal(str)
 
     # Stats: JSON string with counts
-    stats_updated = pyqtSignal(str)
+    stats_updated = Signal(str)
 
     # An approval request arrived: (description, command, callback_id)
     # The UI shows a dialog and calls respond_to_approval(callback_id, bool)
-    approval_requested = pyqtSignal(str, str, str)
+    approval_requested = Signal(str, str, str)
 
     # Notification (title, body)
-    notify = pyqtSignal(str, str)
+    notify = Signal(str, str)
 
     # Show a toast card: (title, body, urgency 1-5)
-    toast_requested = pyqtSignal(str, str, int)
+    toast_requested = Signal(str, str, int)
 
     # Audio transcript heard: (text,)
-    transcript_heard = pyqtSignal(str)
+    transcript_heard = Signal(str)
 
     # Mic status: True = actively listening, False = off/unavailable
-    mic_active = pyqtSignal(bool)
+    mic_active = Signal(bool)
 
     # Task result from executor: (result_text,)
-    task_response = pyqtSignal(str)
+    task_response = Signal(str)
 
     # Claim verified: JSON string {claim, verdict, explanation, sources, confidence}
-    claim_verified = pyqtSignal(str)
+    claim_verified = Signal(str)
 
     # Mission runtime update: JSON string
-    mission_update = pyqtSignal(str)
+    mission_update = Signal(str)
 
     # Agent / swarm update: JSON string
-    agent_update = pyqtSignal(str)
+    agent_update = Signal(str)
 
     # Overlay payload update: JSON string
-    overlay_update = pyqtSignal(str)
+    overlay_update = Signal(str)
 
     # Verification payload update: JSON string
-    verification_update = pyqtSignal(str)
+    verification_update = Signal(str)
 
     # Audio diagnostics / live status
-    audio_debug = pyqtSignal(str)
+    audio_debug = Signal(str)
 
     # Rich screen/perception snapshot payload: JSON string
-    perception_update = pyqtSignal(str)
+    perception_update = Signal(str)
 
     # Deep reasoning workbench payload: JSON string
-    deep_reasoning_update = pyqtSignal(str)
+    deep_reasoning_update = Signal(str)
 
     # ── UI → Backend signals ──────────────────────────────────────────────
     # User pressed "Ask Marrow" button — triggers on-demand activation
-    ask_requested = pyqtSignal()
+    ask_requested = Signal()
 
     # User submitted a text task from the dashboard input
-    text_task_submitted = pyqtSignal(str)
+    text_task_submitted = Signal(str)
 
     def __init__(self):
         super().__init__()

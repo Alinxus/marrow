@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QPoint,
     QRectF,
     Qt,
@@ -17,8 +17,8 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtProperty,
 )
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
@@ -464,7 +464,7 @@ class MarrowControlBar(QWidget):
         self._anim.setEndValue(300)
         self._anim.start()
         if transient and not self._pinned:
-            from PyQt6.QtCore import QTimer
+            from PySide6.QtCore import QTimer
 
             QTimer.singleShot(6000, lambda: self._collapse(force=False))
 
@@ -511,7 +511,7 @@ class MarrowControlBar(QWidget):
         p.fillPath(path, QColor(255, 255, 255, 218))
 
         # Top shimmer
-        from PyQt6.QtGui import QLinearGradient
+        from PySide6.QtGui import QLinearGradient
         shimmer = QLinearGradient(0, 0, 0, 30)
         shimmer.setColorAt(0.0, QColor(255, 255, 255, 90))
         shimmer.setColorAt(1.0, QColor(255, 255, 255, 0))
